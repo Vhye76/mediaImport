@@ -1,0 +1,13 @@
+.git/
+.github/
+.gitignore
+.dockerignore
+README.md
+LICENSE
+docker-compose.yml
+.env
+.env.example
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/*.egg-info/

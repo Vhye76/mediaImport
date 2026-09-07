@@ -1,0 +1,64 @@
+services:
+  mediaimport:
+    container_name: mediaimport
+    image: ghcr.io/Vhye76/mediaimport:latest
+    build: .
+    restart: unless-stopped
+
+    environment:
+      PUID: 1000
+      PGID: 1000
+      RENDER_GID: ${RENDER_GID:?run "stat -c %g /dev/dri/renderD128" on the host and set this in .env}
+
+      MEDIA_IMPORT: /media/import
+      MEDIA_ENCODE: /media/encode
+      MEDIA_COMPLETE: /media/complete
+      MEDIA_HOLD: /media/hold
+      MEDIA_CONFIG: /media/config
+      LIBRARY_MOVIES: /media/library/movies
+      LIBRARY_TV: /media/library/tv
+
+      CERT_DIR: /certs
+      TLS_CERT_FILE: fullchain.pem
+      TLS_KEY_FILE: privkey.pem
+
+      OUTPUT_CODEC: hevc
+      CRF: 18
+      TV_ENCODE_SD: 0
+
+      MAX_JOBS: 3
+      GPU_SLOTS: 1
+      CPU_SLOTS: 1
+      ENCODE_HEADROOM: 3.0
+      ENCODE_THREADS: 0
+
+      WEB_PORT: 443
+      DRY_RUN: 0
+      POLL_INTERVAL: 60
+      MTIME_QUIET: 120
+      LOG_LEVEL: info
+
+    volumes:
+      - ${MEDIA_IMPORT:?set MEDIA_IMPORT in .env}:/media/import
+      - ${MEDIA_ENCODE:?set MEDIA_ENCODE in .env}:/media/encode
+      - ${MEDIA_COMPLETE:?set MEDIA_COMPLETE in .env}:/media/complete
+      - ${MEDIA_HOLD:?set MEDIA_HOLD in .env}:/media/hold
+      - ${MEDIA_CONFIG:?set MEDIA_CONFIG in .env}:/media/config
+      - ${CERT_PATH:?set CERT_PATH in .env}:/certs:ro
+      - ${MOVIES_PATH:?set MOVIES_PATH in .env}:/media/library/movies:ro
+      - ${TV_PATH:?set TV_PATH in .env}:/media/library/tv:ro
+
+    devices:
+      - /dev/dri:/dev/dri
+
+    ports:
+      - "443:443"
+
+    cpus: ${CONTAINER_CPUS:-8}
+    mem_limit: ${CONTAINER_MEM:-16g}
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "3"

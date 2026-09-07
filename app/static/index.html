@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mediaimport</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.ok { color: var(--ok); border-color: #235b3a; }
+  .pill.bad { color: var(--bad); border-color: #5b2323; }
+  .pill.warn { color: var(--warn); border-color: #5b4a23; }
+  main { padding: 24px; display: grid; gap: 24px; max-width: 1200px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+               color: var(--dim); margin: 0; padding: 12px 16px;
+               border-bottom: 1px solid var(--line); font-weight: 600; }
+  .body { padding: 12px 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .stat { background: #171a20; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 16px; border-bottom: 1px solid var(--line);
+           font-size: 13px; vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px;
+       text-transform: uppercase; letter-spacing: .06em; }
+  tr:last-child td { border-bottom: none; }
+  td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+            word-break: break-all; }
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  .empty { color: var(--dim); padding: 16px; font-style: italic; }
+  .reason { color: var(--warn); font-size: 12px; }
+  .banner { background: #2a1f1f; border-color: #5b2323; color: #fca5a5;
+            padding: 10px 16px; font-size: 13px; border-radius: 6px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>mediaimport</h1>
+  <span class="pill" id="codec">codec</span>
+  <span class="pill" id="gpu">gpu</span>
+  <span class="pill" id="encode">encode</span>
+  <span class="pill" id="libs">libraries</span>
+  <span class="pill" id="dry"></span>
+</header>
+<main>
+  <section>
+    <h2>Pipeline</h2>
+    <div class="body"><div class="grid" id="stats"></div></div>
+  </section>
+  <section>
+    <h2>Held, needs a decision</h2>
+    <div id="held"></div>
+  </section>
+  <section>
+    <h2>Titles</h2>
+    <div id="titles"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function pill(el, text, cls) {
+  el.textContent = text;
+  el.className = "pill" + (cls ? " " + cls : "");
+}
+
+function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("/api/status")).json(); }
+  catch (e) { return; }
+
+  pill($("codec"), "output " + s.config.OUTPUT_CODEC);
+  pill($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded",
+       s.gpu.available ? "ok" : "warn");
+  pill($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
+       + (s.encode.separate_filesystem ? "" : " (same fs)"),
+       s.encode.separate_filesystem ? "" : "warn");
+  pill($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
+       s.libraries_mounted ? "" : "warn");
+  pill($("dry"), s.config.DRY_RUN ? "DRY RUN" : "", s.config.DRY_RUN ? "warn" : "");
+  $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+
+  const stages = s.stages || {};
+  $("stats").innerHTML = [
+    ["queue", s.queue_depth],
+    ["gpu jobs", s.slots.gpu_active],
+    ["cpu jobs", s.slots.cpu_active],
+    ["held", stages.HELD || 0],
+    ["published", stages.PUBLISHED || 0],
+    ["retired", stages.RETIRED || 0],
+    ["quarantined", stages.QUARANTINED || 0],
+    ["failed", stages.FAILED || 0],
+  ].map(([k, v]) =>
+    `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`
+  ).join("");
+
+  const held = await (await fetch("/api/held")).json();
+  $("held").innerHTML = held.length === 0
+    ? '<div class="empty">Nothing is waiting on you.</div>'
+    : `<table><tr><th>Source</th><th>Reason</th><th></th></tr>` + held.map(h => `
+        <tr>
+          <td class="name">${h.source_path.split("/").pop()}</td>
+          <td class="reason">${h.reason || ""}</td>
+          <td style="white-space:nowrap">
+            <button onclick="decide(${h.id},'retry')">Retry</button>
+            <button onclick="decide(${h.id},'override')">Force through</button>
+            <button class="bad" onclick="decide(${h.id},'discard')">Discard</button>
+          </td>
+        </tr>`).join("") + `</table>`;
+
+  const titles = await (await fetch("/api/titles")).json();
+  $("titles").innerHTML = titles.length === 0
+    ? '<div class="empty">Nothing has been imported yet.</div>'
+    : `<table><tr><th>Source</th><th>Kind</th><th>Stage</th><th>Encoder</th><th>Grain</th></tr>`
+      + titles.slice(0, 60).map(t => `
+        <tr>
+          <td class="name">${t.source_path.split("/").pop()}</td>
+          <td>${t.kind || ""}</td>
+          <td>${t.stage}</td>
+          <td>${t.encoder || ""}</td>
+          <td>${t.grain_ratio === null || t.grain_ratio === undefined ? "" : t.grain_ratio}</td>
+        </tr>`).join("") + `</table>`;
+}
+
+async function decide(id, action) {
+  await fetch(`/api/held/${id}/decision`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action}),
+  });
+  refresh();
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

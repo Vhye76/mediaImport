@@ -1,0 +1,119 @@
+import logging
+import re
+import unicodedata
+
+log = logging.getLogger("titles")
+
+UNSAFE = '/\\:*?"<>|'
+CONTROL = "".join(chr(c) for c in range(0x00, 0x20))
+
+RESERVED = {"CON", "PRN", "AUX", "NUL"}
+RESERVED |= {"COM%d" % n for n in range(1, 10)}
+RESERVED |= {"LPT%d" % n for n in range(1, 10)}
+
+EM_DASH = "—"
+EN_DASH = "–"
+
+_WS = re.compile(r"\s+")
+
+
+class TitleError(ValueError):
+    pass
+
+
+def _collapse(s):
+    return _WS.sub(" ", s).strip()
+
+
+def to_filename(title):
+    s = str(title)
+    s = s.replace(EM_DASH, " - ").replace(EN_DASH, " - ")
+    s = s.replace("/", "-")
+    s = s.replace(":", "")
+    s = "".join(ch for ch in s if ch not in CONTROL and ch not in UNSAFE)
+    out = _collapse(s)
+    if out != str(title):
+        log.debug("filename transform: %r -> %r", str(title), out)
+    return out
+
+
+def matches(tag_title, name):
+    return to_filename(tag_title) == _collapse(str(name))
+
+
+def is_reserved(name):
+    stem = str(name).split(".")[0].strip().upper()
+    return stem in RESERVED
+
+
+def validate_component(name):
+    problems = []
+    s = str(name)
+    if any(ch in CONTROL for ch in s):
+        problems.append("control-character")
+    for ch in UNSAFE:
+        if ch in s:
+            problems.append("unsafe-%s" % ch)
+    if s != s.rstrip(". "):
+        problems.append("trailing-period-or-space")
+    if is_reserved(s):
+        problems.append("reserved-device-name")
+    return problems
+
+
+def assert_component(name):
+    problems = validate_component(name)
+    if problems:
+        raise TitleError("%r is not a safe path component: %s" % (name, ", ".join(problems)))
+    return name
+
+
+def normalise_for_match(s):
+    s = unicodedata.normalize("NFKC", str(s))
+    s = s.replace(EM_DASH, " - ").replace(EN_DASH, " - ")
+    s = s.replace("&", " and ")
+    s = re.sub(r"[^0-9A-Za-z ]+", " ", s)
+    return _collapse(s).lower()
+
+
+def movie_folder(title, year, tmdb, imdb):
+    imdb = str(imdb)
+    if not imdb.startswith("tt"):
+        imdb = "tt%s" % imdb
+    return assert_component(
+        "%s (%s) [tmdbid-%s] [imdbid-%s]" % (to_filename(title), year, tmdb, imdb)
+    )
+
+
+def movie_filename(title, year, edition=None, folder=None):
+    if edition:
+        base = folder or ""
+        if not base:
+            raise TitleError("an edition filename requires the full folder name")
+        return assert_component("%s - %s.mkv" % (base, to_filename(edition)))
+    return assert_component("%s (%s).mkv" % (to_filename(title), year))
+
+
+def show_folder(show, year, tvdb, tmdb):
+    return assert_component(
+        "%s (%s) [tvdbid-%s] [tmdbid-%s]" % (to_filename(show), year, tvdb, tmdb)
+    )
+
+
+def season_folder(season):
+    return "Season %02d" % int(season)
+
+
+def episode_code(season, first, last=None):
+    season = int(season)
+    first = int(first)
+    if last is None or int(last) == first:
+        return "S%02dE%02d" % (season, first)
+    return "S%02dE%02d-E%02d" % (season, first, int(last))
+
+
+def episode_filename(show, season, first, episode_title, last=None):
+    return assert_component(
+        "%s - %s - %s.mkv"
+        % (to_filename(show), episode_code(season, first, last), to_filename(episode_title))
+    )
