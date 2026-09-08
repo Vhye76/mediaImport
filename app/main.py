@@ -116,7 +116,7 @@ def main():
 
     if not layout.encode_is_separate():
         log.warning(
-            "MEDIA_ENCODE is on the same filesystem as MEDIA_COMPLETE, "
+            "the encode area is on the same filesystem as the rest of the root, "
             "per-title work will not get the fast-storage benefit"
         )
     if not layout.libraries:

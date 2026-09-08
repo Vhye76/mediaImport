@@ -604,7 +604,8 @@ class Orchestrator:
             self.store.advance(title_id, state.RETIRED, "dry run")
             return
         destination = self.layout.quarantine_path(source)
-        os.replace(source, destination)
+        self.layout.move_file(source, destination)
+        log.info("retired %s to quarantine", os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
         self.store.advance(title_id, state.RETIRED, "source retired to quarantine")
 
@@ -617,7 +618,7 @@ class Orchestrator:
             self.store.advance(title_id, state.QUARANTINED, reason)
             return "quarantined"
         destination = self.layout.quarantine_path(source)
-        os.replace(source, destination)
+        self.layout.move_file(source, destination)
         self.store.advance(title_id, state.QUARANTINED, reason, reason=reason)
         log.info("quarantined %s: %s", os.path.basename(source), reason)
         return "quarantined"

@@ -51,19 +51,30 @@ One process holds everything:  the orchestrator loop, the encode workers and the
 
 ## 4.  Mount contract
 
-Seven mount points, all overridable.  Host paths are a deployment detail and appear only in the reference compose file.  Nothing in the image knows or cares what they are.
+ONE REQUIRED MOUNT.  Host paths are a deployment detail and appear only in the reference compose file.  Nothing in the image knows or cares what they are.
 
 ```
-CONTAINER PATH          ENV VAR         MODE  REQUIRED
-/media/import           MEDIA_IMPORT    rw    yes
-/media/encode           MEDIA_ENCODE    rw    yes
-/media/complete         MEDIA_COMPLETE  rw    yes
-/media/hold             MEDIA_HOLD      rw    yes
-/media/config           MEDIA_CONFIG    rw    yes
-/media/library/movies   LIBRARY_MOVIES  ro    no
-/media/library/tv       LIBRARY_TV      ro    no
-/certs                  CERT_DIR        ro    yes
+CONTAINER PATH          ENV VAR         MODE  REQUIRED  DEFAULT
+/media                  MEDIA_ROOT      rw    yes       -
+/media/encode           MEDIA_ENCODE    rw    no        <root>/encode
+/media/config           MEDIA_CONFIG    rw    no        <root>/config
+/media/library/movies   LIBRARY_MOVIES  ro    no        unset
+/media/library/tv       LIBRARY_TV      ro    no        unset
+/certs                  CERT_DIR        ro    yes       /certs
 ```
+
+FOUR DIRECTORIES ARE DERIVED FROM THE ROOT AND ARE NOT CONFIGURABLE:
+
+```
+<root>/import
+<root>/complete
+<root>/complete/.quarantine
+<root>/hold
+```
+
+THAT IS DELIBERATE AND IT IS LOAD BEARING.  A title moves between those four, and a move between two paths under one mount is a rename:  instant, no data copied, whatever the file size.  Split them onto separate mounts and every one of those moves becomes a copy at best, and at worst fails outright.  It failed outright once;  see section 21.
+
+ONLY ENCODE AND CONFIG ARE OVERRIDABLE, because they are the two that benefit from faster storage and neither is a rename target.  Left unset they are subdirectories of the root and everything is one mount.  Pointed elsewhere, the crossing is paid once at publish, which is a copy either way when the encode area is on a different pool.
 
 THE PIPELINE IS IMPORT, ENCODE, COMPLETE.  Those three are the stages.  'hold/' and 'config/' are not stages;  they are where a title goes when it cannot proceed, and where the machinery keeps its state.
 
@@ -78,7 +89,7 @@ config/       state.db, the instance lock, provider cache, logs
 
 QUARANTINE LIVES UNDER 'complete/', not on its own mount.  It is a dotted directory so it sits beside finished work without being mistaken for it.  Nothing in the container ever scans 'complete/';  the orchestrator only joins paths to write into it, so a dotted sibling costs nothing.
 
-EACH STAGE IS ITS OWN MOUNT AND ALL FIVE WRITABLE ONES ARE REQUIRED.  There is no root to fall back to and no derived layout, so a missing mount is a startup error naming the variable rather than a directory quietly created in the wrong place.  'config/' in particular has to be persistent:  it holds the SQLite store, so losing it means re-processing everything, and it holds the flock that section 19's single-instance guarantee depends on, which only works if two containers can see the same file.
+A MISSING ROOT IS A STARTUP ERROR, not a directory quietly created in the wrong place.  'MEDIA_ENCODE' and 'MEDIA_CONFIG' are validated only when they are set explicitly;  unset, 'Layout.ensure' creates them under the root.  'config/' has to be persistent wherever it lands:  it holds the SQLite store, so losing it means re-processing everything, and it holds the flock that section 19's single-instance guarantee depends on, which only works if two containers can see the same file.
 
 DEGRADE, DO NOT FAIL, APPLIES TO THE LIBRARIES ONLY.  Without a library mount the incumbent comparison is skipped and every title is treated as new.  Logged at startup and shown in the UI, because silently skipping a gate is worse than not having one.
 
@@ -103,11 +114,9 @@ Admission control requires roughly ENCODE_HEADROOM times the source size free be
 The environment is the entire configuration surface.  No config file, no host assumptions.  Every variable below is read once at startup, validated, and echoed into the log and onto '/api/status', so what the container thinks it was configured with is always visible without exec-ing into it.
 
 ```
-MEDIA_IMPORT         /media/import     required rw, the watched drop zone
-MEDIA_ENCODE         /media/encode     required rw, the per-title work area
-MEDIA_COMPLETE       /media/complete   required rw, terminal output
-MEDIA_HOLD           /media/hold       required rw, titles needing a decision
-MEDIA_CONFIG         /media/config     required rw, state.db, lock, cache, logs
+MEDIA_ROOT           /media            required rw, the one mount everything derives from
+MEDIA_ENCODE         <root>/encode     optional, per-title work area on faster storage
+MEDIA_CONFIG         <root>/config     optional, state.db, lock, cache, logs
 LIBRARY_MOVIES       unset             ro movie library
 LIBRARY_TV           unset             ro tv library
 CERT_DIR             /certs            ro, holds the TLS certificate and key
@@ -688,6 +697,20 @@ RE-DERIVE THE FILE LIST AT APPLY TIME rather than reusing one captured during an
 SELECTING THE WORK AND VERIFYING THE WORK MUST USE DIFFERENT CODE PATHS.  Reusing one query for both is how a run reports total success over an incomplete list.
 
 'glob.glob' treats '[i_c]' in a real folder name as a character class and silently matches nothing.  USE os.walk for paths containing brackets, which every '[tvdbid-N]' folder does.
+
+RENAME FAILS ACROSS MOUNT POINTS EVEN ON THE SAME DEVICE.  Linux refuses 'rename(2)' when the two paths are on different mounts, regardless of whether they share a filesystem.  Measured 2026-09-08 while retiring a source after a successful publish:
+
+```
+/media/import    dev=42
+/media/complete  dev=42
+os.replace(...)  OSError [Errno 18] Invalid cross-device link
+```
+
+Same device number on both sides and EXDEV anyway, because they were two separate bind mounts of one filesystem.  The obvious reading of "cross-device link" is that the filesystems differ, and that reading is wrong.  The encode, the verification and the publish had all completed;  only the final move failed, and the title landed in FAILED with the work already done.
+
+TWO CONSEQUENCES, BOTH IN THE CODE NOW.  The layout collapsed to one root so the pipeline directories are siblings again, and 'paths.move_file' tries 'rename' first and falls back to copy-then-remove only on EXDEV.  Never assume a move within the container is cheap;  never assume it is expensive either.  Let the kernel answer.
+
+A FAILED MOVE MUST RELEASE ITS OWN RESERVATION.  'unique_path' reserves the destination with 'O_CREAT | O_EXCL' before any data moves, so the failure above left a zero-byte file sitting in quarantine.  'move_file' removes the reservation on every failure path.
 
 DOCKER IGNORE PATTERNS ARE PATH-PREFIX MATCHED FROM THE CONTEXT ROOT, NOT gitignore SEMANTICS.  A '.dockerignore' line of '__pycache__/' excludes only './__pycache__/' and does nothing about 'app/__pycache__/'.  Found 2026-09-07 when a build shipped 18 stale .pyc files into the image.  Use '**/__pycache__/' and '**/*.py[cod]'.
 

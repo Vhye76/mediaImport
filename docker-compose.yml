@@ -10,10 +10,8 @@ services:
       PGID: 1000
       RENDER_GID: ${RENDER_GID:?run "stat -c %g /dev/dri/renderD128" on the host and set this in .env}
 
-      MEDIA_IMPORT: /media/import
+      MEDIA_ROOT: /media
       MEDIA_ENCODE: /media/encode
-      MEDIA_COMPLETE: /media/complete
-      MEDIA_HOLD: /media/hold
       MEDIA_CONFIG: /media/config
       LIBRARY_MOVIES: /media/library/movies
       LIBRARY_TV: /media/library/tv
@@ -39,10 +37,8 @@ services:
       LOG_LEVEL: info
 
     volumes:
-      - ${MEDIA_IMPORT:?set MEDIA_IMPORT in .env}:/media/import
+      - ${MEDIA_ROOT:?set MEDIA_ROOT in .env}:/media
       - ${MEDIA_ENCODE:?set MEDIA_ENCODE in .env}:/media/encode
-      - ${MEDIA_COMPLETE:?set MEDIA_COMPLETE in .env}:/media/complete
-      - ${MEDIA_HOLD:?set MEDIA_HOLD in .env}:/media/hold
       - ${MEDIA_CONFIG:?set MEDIA_CONFIG in .env}:/media/config
       - ${CERT_PATH:?set CERT_PATH in .env}:/certs:ro
       - ${MOVIES_PATH:?set MOVIES_PATH in .env}:/media/library/movies:ro

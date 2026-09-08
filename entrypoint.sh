@@ -28,14 +28,10 @@ else
 fi
 
 missing=""
-for spec in \
-    "MEDIA_IMPORT:${MEDIA_IMPORT:-/media/import}" \
-    "MEDIA_ENCODE:${MEDIA_ENCODE:-/media/encode}" \
-    "MEDIA_COMPLETE:${MEDIA_COMPLETE:-/media/complete}" \
-    "MEDIA_HOLD:${MEDIA_HOLD:-/media/hold}" \
-    "MEDIA_CONFIG:${MEDIA_CONFIG:-/media/config}" \
-    "CERT_DIR:${CERT_DIR:-/certs}" \
-; do
+specs="MEDIA_ROOT:${MEDIA_ROOT:-/media} CERT_DIR:${CERT_DIR:-/certs}"
+if [ -n "${MEDIA_ENCODE:-}" ]; then specs="${specs} MEDIA_ENCODE:${MEDIA_ENCODE}"; fi
+if [ -n "${MEDIA_CONFIG:-}" ]; then specs="${specs} MEDIA_CONFIG:${MEDIA_CONFIG}"; fi
+for spec in ${specs}; do
     name="${spec%%:*}"
     path="${spec#*:}"
     if [ ! -d "${path}" ]; then

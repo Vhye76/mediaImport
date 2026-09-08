@@ -46,22 +46,20 @@ TESTPLAN.md     container validation cases, executed by hand
 
 ## Mount contract
 
-The pipeline is import, then encode, then complete.  Each stage is its own mount and all five writable mounts are required;  there is no root to fall back to.
+The pipeline is import, then encode, then complete.  One mount is required and everything else derives from it.  'import', 'complete', 'complete/.quarantine' and 'hold' are always subdirectories of the root and are not configurable, because a move between them is then a rename rather than a copy.
 
 | Container path | Env var | Mode | Required | Purpose |
 |---|---|---|---|---|
-| /media/import | MEDIA_IMPORT | rw | yes | drop zone, the only watched path |
-| /media/encode | MEDIA_ENCODE | rw | yes | per-title work area, put this on fast storage |
-| /media/complete | MEDIA_COMPLETE | rw | yes | finished titles, collected by hand |
-| /media/hold | MEDIA_HOLD | rw | yes | titles needing a decision |
-| /media/config | MEDIA_CONFIG | rw | yes | state.db, instance lock, provider cache, logs |
+| /media | MEDIA_ROOT | rw | yes | the one required mount, everything derives from it |
+| /media/encode | MEDIA_ENCODE | rw | no | per-title work area, mount separately for fast storage |
+| /media/config | MEDIA_CONFIG | rw | no | state.db, instance lock, provider cache, logs |
 | /media/library/movies | LIBRARY_MOVIES | ro | no | incumbent comparison |
 | /media/library/tv | LIBRARY_TV | ro | no | incumbent comparison |
 | /certs | CERT_DIR | ro | yes | TLS certificate and key |
 
 Quarantine is not a mount.  Retired sources and rejected files go to '/media/complete/.quarantine'.
 
-Without a library mount the incumbent comparison is skipped and every title is treated as new, which is logged at startup and shown in the UI.  Every other mount is required and a missing one is a startup error naming the variable.
+Without a library mount the incumbent comparison is skipped and every title is treated as new, which is logged at startup and shown in the UI.  A missing root is a startup error naming the variable.
 
 The whole per-title work area lives on the encode mount, not just the encode.  A title is copied in once, then remuxed, tagged, encoded and verified there, and the finished file is moved out once.  That is two crossings of the slow filesystem in exchange for keeping three or four full-file rewrites on fast storage.  Startup compares the filesystem of the encode and complete mounts and warns when they match, so a fast disk that silently landed on the same filesystem is visible rather than mysterious.
 
@@ -69,11 +67,9 @@ The whole per-title work area lives on the encode mount, not just the encode.  A
 
 | Name | Default | Purpose |
 |---|---|---|
-| MEDIA_IMPORT | /media/import | required rw, watched drop zone |
-| MEDIA_ENCODE | /media/encode | required rw, per-title work area |
-| MEDIA_COMPLETE | /media/complete | required rw, terminal output |
-| MEDIA_HOLD | /media/hold | required rw, titles needing a decision |
-| MEDIA_CONFIG | /media/config | required rw, state.db, lock, cache, logs |
+| MEDIA_ROOT | /media | required rw, the one mount everything derives from |
+| MEDIA_ENCODE | <root>/encode | optional, per-title work area on faster storage |
+| MEDIA_CONFIG | <root>/config | optional, state.db, lock, cache, logs |
 | LIBRARY_MOVIES | unset | ro movie library |
 | LIBRARY_TV | unset | ro tv library |
 | CERT_DIR | /certs | ro, holds the TLS certificate and key |

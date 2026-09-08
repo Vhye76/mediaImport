@@ -15,10 +15,12 @@ Nothing here runs on a workstation.  The workstation and the container are diffe
 Before any case runs:
 
 ```
-image built                docker build -t mediaimport:local .
-five writable mounts        import, encode, complete, hold, config
+image built                 docker build -t mediaimport:local .
+root mounted                MEDIA_ROOT, the one required writable mount
 certificate mounted         /certs holds the certificate and key
 RENDER_GID set              stat -c %g /dev/dri/renderD128 on the host
+
+MEDIA_ENCODE and MEDIA_CONFIG are optional.  Cases that need them mounted separately say so.
 ```
 
 'LOG_LEVEL' is not set by this plan and no case depends on it.
@@ -55,11 +57,29 @@ Unless a case says otherwise, reset by stopping the container, emptying import, 
 - **Do:**  'curl -sk https://localhost/api/status | jq .gpu'.
 - **Expect:**  'available' true with a non-empty 'av1_encode_profiles', or 'degraded' true with a 'reason' naming the cause.  Both are valid outcomes;  record which.
 
-**T-04  A missing mount refuses to start.**
+**T-04  A missing root refuses to start.**
 
-- **Start:**  container stopped, one writable mount removed from the compose file.
+- **Start:**  container stopped, the MEDIA_ROOT volume removed from the compose file.
 - **Do:**  'docker compose up', read the exit.
-- **Expect:**  the container exits non-zero and the message names the missing variable.  Record which variable was named.
+- **Expect:**  the container exits non-zero and the message names MEDIA_ROOT.
+
+**T-04a  The optional mounts are genuinely optional.**
+
+- **Start:**  container stopped, only MEDIA_ROOT and /certs mounted.
+- **Do:**  'docker compose up -d', then read '/api/status'.
+- **Expect:**  a clean start.  'encode' and 'config' are created as subdirectories of the root and the banner shows them there.
+
+**T-04b  A retire is a rename when everything is under one root.**
+
+- **Start:**  the collapsed layout from T-04a, a resolvable title in import.
+- **Do:**  run it to RETIRED, then compare the inode of the source before and of the quarantined file after.
+- **Expect:**  the same inode.  A rename, not a copy.
+
+**T-04c  A retire still works when encode is on another pool.**
+
+- **Start:**  MEDIA_ENCODE mounted on separate storage.
+- **Do:**  run a title to RETIRED.
+- **Expect:**  publish copies, retire renames, both succeed, and no zero-byte file is left in quarantine.
 
 **T-05  A missing certificate refuses to start.**
 

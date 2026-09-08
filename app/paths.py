@@ -1,3 +1,4 @@
+import errno
 import logging
 import os
 import shutil
@@ -28,13 +29,15 @@ def _under(path, root):
 class Layout:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.encode = _norm(cfg.media_encode)
+        self.media_root = _norm(cfg.media_root)
 
-        self.imports = _norm(cfg.media_import)
-        self.held = _norm(cfg.media_hold)
-        self.completed = _norm(cfg.media_complete)
-        self.config = _norm(cfg.media_config)
+        self.imports = os.path.join(self.media_root, "import")
+        self.held = os.path.join(self.media_root, "hold")
+        self.completed = os.path.join(self.media_root, "complete")
         self.quarantine = os.path.join(self.completed, ".quarantine")
+
+        self.encode = _norm(cfg.media_encode)
+        self.config = _norm(cfg.media_config)
 
         self.libraries = {}
         if cfg.library_movies:
@@ -43,13 +46,11 @@ class Layout:
             self.libraries["tv"] = _norm(cfg.library_tv)
 
         self.read_only_roots = tuple(self.libraries.values())
-        self.writable_roots = (
-            self.imports,
-            self.held,
-            self.completed,
-            self.config,
-            self.encode,
-        )
+        roots = [self.media_root]
+        for extra in (self.encode, self.config):
+            if not _under(extra, self.media_root):
+                roots.append(extra)
+        self.writable_roots = tuple(roots)
         self.work_dirs = (
             self.imports,
             self.held,
@@ -191,20 +192,36 @@ class Layout:
         os.close(fd)
         return destination
 
+    def move_file(self, source, destination):
+        self.assert_writable(destination)
+        self.guarded_makedirs(os.path.dirname(destination))
+        try:
+            os.replace(source, destination)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                self._discard_reservation(destination)
+                raise
+            log.debug("rename crossed a mount boundary, falling back to copy")
+            staging = destination + ".incoming"
+            try:
+                shutil.copy2(source, staging)
+                os.replace(staging, destination)
+            except BaseException:
+                self._discard_reservation(staging)
+                self._discard_reservation(destination)
+                raise
+            os.remove(source)
+        return destination
+
+    def _discard_reservation(self, path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
     def publish_file(self, source, destination):
         self.reserve(destination)
-        staging = destination + ".incoming"
-        try:
-            shutil.copy2(source, staging)
-            os.replace(staging, destination)
-        except BaseException:
-            for leftover in (staging, destination):
-                try:
-                    os.remove(leftover)
-                except OSError:
-                    pass
-            raise
-        os.remove(source)
+        self.move_file(source, destination)
         log.info("published %s", destination)
         return destination
 

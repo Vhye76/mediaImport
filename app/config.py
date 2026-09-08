@@ -96,11 +96,13 @@ class Config:
 
     def _load(self):
         _SOURCES.clear()
-        self.media_import = _str("MEDIA_IMPORT", "/media/import")
-        self.media_encode = _str("MEDIA_ENCODE", "/media/encode")
-        self.media_complete = _str("MEDIA_COMPLETE", "/media/complete")
-        self.media_hold = _str("MEDIA_HOLD", "/media/hold")
-        self.media_config = _str("MEDIA_CONFIG", "/media/config")
+        self.media_root = _str("MEDIA_ROOT", "/media")
+        encode_override = _str("MEDIA_ENCODE")
+        config_override = _str("MEDIA_CONFIG")
+        self.media_encode = encode_override or os.path.join(self.media_root, "encode")
+        self.media_config = config_override or os.path.join(self.media_root, "config")
+        self.encode_mounted = bool(encode_override)
+        self.config_mounted = bool(config_override)
         self.library_movies = _str("LIBRARY_MOVIES")
         self.library_tv = _str("LIBRARY_TV")
 
@@ -166,13 +168,12 @@ class Config:
             raise ConfigError(
                 "ENCODE_THREADS must not be negative, got %d" % self.encode_threads
             )
-        for name, path in (
-            ("MEDIA_IMPORT", self.media_import),
-            ("MEDIA_ENCODE", self.media_encode),
-            ("MEDIA_COMPLETE", self.media_complete),
-            ("MEDIA_HOLD", self.media_hold),
-            ("MEDIA_CONFIG", self.media_config),
-        ):
+        required = [("MEDIA_ROOT", self.media_root)]
+        if self.encode_mounted:
+            required.append(("MEDIA_ENCODE", self.media_encode))
+        if self.config_mounted:
+            required.append(("MEDIA_CONFIG", self.media_config))
+        for name, path in required:
             if not os.path.isdir(path):
                 raise ConfigError("%s points at %s which is not a mounted directory" % (name, path))
 
@@ -214,10 +215,8 @@ class Config:
 
     def as_dict(self):
         return {
-            "MEDIA_IMPORT": self.media_import,
+            "MEDIA_ROOT": self.media_root,
             "MEDIA_ENCODE": self.media_encode,
-            "MEDIA_COMPLETE": self.media_complete,
-            "MEDIA_HOLD": self.media_hold,
             "MEDIA_CONFIG": self.media_config,
             "LIBRARY_MOVIES": self.library_movies,
             "LIBRARY_TV": self.library_tv,
