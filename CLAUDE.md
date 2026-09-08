@@ -225,22 +225,27 @@ The letterbox check is cheap-first:  only a frame whose display aspect is 16:9 o
 
 ## 8.  New versus incumbent comparison
 
-Runs after identification and before any encode.  Ordered gates, first clear difference decides.
+Runs after identification and before any encode.  EVERY GATE IS EVALUATED AND THE VOTES ARE TALLIED.  The first difference does not decide.
 
 ```
-1  HDR or Dolby Vision present    losing it is never an upgrade
+1  HDR or Dolby Vision present    losing it is never an upgrade, asymmetric, see below
 2  display pixel count            w * SAR / h, never stored dimensions
 3  baked-in letterbox             larger real picture area wins, gate 2 defers to it
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
-6  source pedigree                remux > encode > web
+6  video bitrate                  weighted for codec efficiency, comparative only
+7  source pedigree                remux > encode > web, tiebreak only
 ```
 
-Clear win proceeds.  Clear loss goes to quarantine with no encode spent.  Level or contradictory goes to held with a side-by-side attribute table in the UI.
+Every vote a win proceeds.  Every vote a loss goes to quarantine with no encode spent.  VOTES IN BOTH DIRECTIONS GO TO HELD with a side-by-side attribute table in the UI, and so does a pair on which no gate voted at all.
 
-Gate 6 is last on purpose.  Source pedigree is inferred from release naming, which is exactly the kind of signal this project distrusts everywhere else, so it only ever breaks a tie that the five measurable gates could not, and it is flagged as a weak signal when it does.
+FIRST-DIFFERENCE-WINS WAS THE BEHAVIOUR AND IT WAS NEVER WHAT THIS SECTION SAID.  'compare.compare' returned at the first differing gate and never evaluated a later one, so "level or contradictory goes to held" only ever fired for level, and a split verdict was settled silently by whichever gate happened to sit earliest.  Found 2026-09-08 while adding gate 6:  Blade Runner 2049 arrived at 9.024 Mbps h264 against a 1.326 Mbps HEVC incumbent, losing gate 5 on bit depth and winning gate 6 roughly fourfold once weighted.  Under the old model whichever of those two was placed first would have buried the other without trace.  It now holds for review.
 
-Gates 2 and 3 need both sides to be measurable.  When one side is missing the gate is skipped and the skip is recorded in the notes rather than silently treated as a tie.
+GATE 1 IS ASYMMETRIC AND IT IS THE ONLY SHORT CIRCUIT.  An incoming file that LACKS HDR or Dolby Vision the incumbent carries is an immediate loss and no further gate is evaluated, because losing it is never an upgrade.  An incoming file that GAINS it casts an ordinary win vote and can be contradicted into review.  The documented rule speaks only to the loss direction, and the code now says that and nothing more.
+
+Gate 7 is last on purpose and is a tiebreak rather than a vote.  Source pedigree is inferred from release naming, which is exactly the kind of signal this project distrusts everywhere else, so it is consulted ONLY when no measurable gate voted, and it is flagged as a weak signal when it decides.
+
+Gates 2, 3 and 6 need both sides to be measurable.  When one side is missing the gate casts no vote and the skip is recorded in the notes rather than silently treated as a tie.  A deferred gate 2 casts no vote either.
 
 THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SIX IT GATES ON.  Anything measured and dropped is a defect rather than an omission.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such, because that is the case where the pipeline saw something and had no rule for it.  This was written after a title won on audio channel count while the incumbent's real disqualifier, a 25 fps PAL speed-up, was invisible to all six gates.
 
@@ -251,6 +256,34 @@ GATE 2 DEFERS TO GATE 3 WHENEVER EITHER SIDE CARRIES BAKED-IN BARS.  Display pix
 THE DEFER CONDITION HAS NO AMBIGUOUS MIDDLE, BY CONSTRUCTION.  'media.CROP_MIN_BARS_PX' and 'standards.LETTERBOX_MAX_BARS_PX' are both 20, so 'letterbox_px' is only ever 0 or 20 and above.
 
 The exposure was never one title.  A 24-file cropdetect sample of the movie library, taken with the bit-depth-scaled limit from section 16, found the 10 to 19 px band empty and three titles at or above 20 px, two of them the same shape as the Blade Runner incumbent:  Suicide Squad at 1920x1080 with 280 px, and Guardians of the Galaxy Vol. 3 at 1920x1016 with 212 px.  A correctly cropped arrival for either was quarantined by the old gate 2.
+
+### Video bitrate, gate 6
+
+COMPARATIVE ONLY.  There is no minimum bitrate and none is to be added.  Section 7 does not screen on it, and section 14's rule that size figures are the wrong measure of whether a run succeeded is unchanged.  This gate weighs two candidate files against each other;  it does not judge an encode.
+
+THE FIGURE IS THE VIDEO TRACK'S OWN BPS, ON BOTH SIDES.  'probe._video_bitrate' reads the 'BPS' or 'BPS-eng' stream tag first, falls back to NUMBER_OF_BYTES times 8 over the track's own DURATION, and finally to ffprobe's stream 'bit_rate', which Matroska frequently omits.  Verified 2026-09-08:  both sides of the Blade Runner pair carry a BPS tag, so the first rung answers.
+
+Using the video track rather than the whole file is what keeps section 17's "VIDEO BPS EXCEEDS WHOLE-FILE BITRATE" false positive out of scope.  That trap is a track figure compared against a container figure;  this is track against track, each over its own duration.  A whole-file figure would also fold in audio and subtitle tracks, which differ between candidates for reasons that have nothing to do with picture.
+
+RAW BITRATE ACROSS CODECS IS NOT A QUALITY COMPARISON, so the figures are weighted first:
+
+```
+CODEC_EFFICIENCY, relative to h264 = 1.0
+  h264, avc      1.0
+  hevc, h265     1.7
+  av1            2.2
+  vc1            0.9
+  mpeg4          0.7
+  mpeg2video     0.45
+```
+
+STARTING POINTS, NOT SETTLED VALUES, in the sense section 14 uses for the AV1 parameters.  No calibration batch has been run against this library.  The av1 figure derives from section 25's 25 to 30 percent applied to the hevc figure.  Anything unlisted is treated as 1.0.
+
+Without the weighting the gate systematically favours less efficient codecs, and the failure is self-defeating rather than merely wrong:  re-importing a title whose h264 source still exists would rate that source above the HEVC this pipeline produced from it, and quarantine its own output.
+
+'BITRATE_TOLERANCE' is 0.25 against 'PIXEL_TOLERANCE' at 0.05, and it is also unmeasured.  Legitimate encodes of one title vary far more in bitrate than in pixel count, so the 5 percent figure would make almost every pair cast a vote.
+
+NO BITS-PER-PIXEL NORMALISATION.  A differing resolution is gates 2 and 3's business, and under the tally a resolution vote that contradicts a bitrate vote lands in review, which is the correct outcome rather than something to normalise away.
 
 A PAL SPEED-UP IS DETECTED FROM THE PAIR, NOT FROM ONE FILE.  Equal frame counts within one frame at different frame rates means one side is speed-adjusted and the slower rate is correct.  That works at any resolution.  The single-file check in 'standards' keys on stored height and could not see a 1080p file at 25 fps carrying a 23.976 master's frame count.
 
@@ -453,6 +486,8 @@ An audit of 2276 episodes found 329 affected across four shows, and 51 of 213 mo
 
 Every file carries per-track BPS, DURATION, NUMBER_OF_FRAMES and NUMBER_OF_BYTES, written with '--add-track-statistics-tags'.
 
+THESE ARE READ BACK, NOT ONLY WRITTEN.  'probe._video_bitrate' takes the video track's BPS as the input to comparison gate 6, and falls back to NUMBER_OF_BYTES over DURATION when the tag is absent.  A file whose statistics were destroyed therefore loses a comparison gate as well as its own accuracy, which is one more reason section 12's byte-sum re-check is not optional.
+
 USE '--tags global:' AND NEVER '--tags all:'.  The all: form replaces every tag in the file and destroys per-track statistics.
 
 The global: form replaces only untargeted tags, so per-track statistics normally survive.  THIS PROTECTION IS NOT UNIVERSAL.  Statistics are only safe when they are track targeted; some files store them as global tags and those ARE destroyed.  One film lost every statistics tag to exactly this while its sibling survived the identical command in the same batch.  ALWAYS re-check the byte-sum ratio after writing global tags and re-run '--add-track-statistics-tags' where it comes back zero.  'tags.refresh_statistics' does this and returns the ratio.
@@ -638,7 +673,7 @@ Do not report these as defects.
 
 CLAIMED BYTES EXCEED FILE SIZE.  Caused by zlib-compressed PGS subtitle tracks:  mkvpropedit reports uncompressed logical bytes while Matroska stores them compressed.  Only a large overshoot, above roughly 1.5x, means genuinely stale tags.
 
-VIDEO BPS EXCEEDS WHOLE-FILE BITRATE.  BPS is computed over the track's own duration, not the container's, so a video track shorter than its container inflates the figure.
+VIDEO BPS EXCEEDS WHOLE-FILE BITRATE.  BPS is computed over the track's own duration, not the container's, so a video track shorter than its container inflates the figure.  Comparison gate 6 is not affected:  it reads video-track BPS on BOTH sides, so the two figures are computed the same way and the trap needs a container figure on one side to bite.
 
 A STREAM WITH NO STATISTICS TAGS.  Cover-art mjpeg streams are never tagged.
 
@@ -778,9 +813,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.8.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.9.
 
-TAGS ARE BARE NUMERIC.  '0.0.8', not 'v0.0.8'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.9', not 'v0.0.9'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 

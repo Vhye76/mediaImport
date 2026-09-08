@@ -9,6 +9,19 @@ LOSS = "loss"
 AMBIGUOUS = "ambiguous"
 
 PIXEL_TOLERANCE = 0.05
+BITRATE_TOLERANCE = 0.25
+
+CODEC_EFFICIENCY = {
+    "h264": 1.0,
+    "avc": 1.0,
+    "hevc": 1.7,
+    "h265": 1.7,
+    "av1": 2.2,
+    "vc1": 0.9,
+    "mpeg4": 0.7,
+    "msmpeg4v3": 0.7,
+    "mpeg2video": 0.45,
+}
 
 PEDIGREE_ORDER = ("web", "encode", "remux")
 PEDIGREE_PATTERNS = (
@@ -24,6 +37,12 @@ def pedigree(name):
         if pattern.search(base):
             return label
     return None
+
+
+def normalised_bitrate(bitrate, codec):
+    if not bitrate:
+        return None
+    return float(bitrate) * CODEC_EFFICIENCY.get(str(codec or "").lower(), 1.0)
 
 
 def _pedigree_rank(label):
@@ -54,7 +73,8 @@ MEASURED = (
     ("audio_default_count", "default audio tracks", None),
     ("bit_depth", "bit depth", 5),
     ("pix_fmt", "pixel format", None),
-    ("pedigree", "source pedigree", 6),
+    ("video_bitrate", "video bitrate", 6),
+    ("pedigree", "source pedigree", 7),
     ("frame_rate", "frame rate", None),
     ("frame_count", "frame count", None),
     ("duration_s", "runtime seconds", None),
@@ -105,6 +125,7 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
         "sar": round(float(video.get("sar") or 0.0), 4) or None,
         "bit_depth": int(video.get("bit_depth") or 8),
         "pix_fmt": video.get("pix_fmt"),
+        "video_bitrate": video.get("bitrate"),
         "frame_rate": round(float(video.get("frame_rate") or 0.0), 5) or None,
         "frame_count": int(video.get("frame_count") or 0) or None,
         "duration_s": round(float(duration), 3) if duration else None,
@@ -184,13 +205,20 @@ def speed_mismatch(incoming, incumbent):
 
 
 class Comparison:
-    def __init__(self, verdict, gate, reason, incoming, incumbent, notes=None):
+    def __init__(self, verdict, gate, reason, incoming, incumbent, notes=None, votes=None):
         self.verdict = verdict
         self.gate = gate
         self.reason = reason
         self.incoming = incoming
         self.incumbent = incumbent
         self.notes = list(notes or [])
+        self.votes = list(votes or [])
+
+    @property
+    def gates(self):
+        if self.votes:
+            return [v["gate"] for v in self.votes]
+        return [self.gate] if self.gate else []
 
     @property
     def is_win(self):
@@ -209,7 +237,7 @@ class Comparison:
                 "attribute": key,
                 "label": label,
                 "gate": gate,
-                "decided": gate is not None and gate == self.gate,
+                "decided": gate is not None and gate in self.gates,
                 "incoming": new,
                 "incumbent": old,
                 "differs": new != old,
@@ -224,6 +252,8 @@ class Comparison:
         return {
             "verdict": self.verdict,
             "gate": self.gate,
+            "gates": self.gates,
+            "votes": self.votes,
             "reason": self.reason,
             "notes": self.notes,
             "incoming_path": self.incoming.get("path"),
@@ -236,18 +266,21 @@ class Comparison:
         return "<Comparison %s gate=%s>" % (self.verdict, self.gate)
 
 
-def _decide(gate, reason, new, old, incoming, incumbent, notes):
-    log.debug("gate %d decided: incoming %s versus incumbent %s", gate, new, old)
-    if new > old:
-        result = Comparison(WIN, gate, reason % "incoming", incoming, incumbent, notes)
-    else:
-        result = Comparison(LOSS, gate, reason % "incumbent", incoming, incumbent, notes)
-    log.info("comparison %s at gate %d: %s", result.verdict, gate, result.reason)
-    return result
+def _cast(votes, gate, reason, new, old):
+    verdict = WIN if new > old else LOSS
+    votes.append({
+        "gate": gate,
+        "verdict": verdict,
+        "reason": reason % ("incoming" if verdict == WIN else "incumbent"),
+        "incoming": new,
+        "incumbent": old,
+    })
+    log.debug("gate %s votes %s: incoming %s versus incumbent %s", gate, verdict, new, old)
 
 
 def compare(incoming, incumbent):
     notes = []
+    votes = []
     log.debug(
         "comparing %s against %s",
         incoming.get("path"), incumbent.get("path"),
@@ -261,15 +294,23 @@ def compare(incoming, incumbent):
     new_hv = incoming["dolby_vision"] or incoming["hdr"]
     old_hv = incumbent["dolby_vision"] or incumbent["hdr"]
     if new_hv != old_hv:
-        return _decide(
-            1,
-            "only the %s carries HDR or Dolby Vision, losing it is never an upgrade",
-            int(new_hv),
-            int(old_hv),
-            incoming,
-            incumbent,
-            notes,
-        )
+        if not new_hv:
+            reason = (
+                "only the incumbent carries HDR or Dolby Vision,"
+                " losing it is never an upgrade"
+            )
+            log.info("comparison loss at gate 1: %s", reason)
+            return Comparison(
+                LOSS, 1, reason, incoming, incumbent, notes,
+                [{
+                    "gate": 1,
+                    "verdict": LOSS,
+                    "reason": reason,
+                    "incoming": int(new_hv),
+                    "incumbent": int(old_hv),
+                }],
+            )
+        _cast(votes, 1, "only the %s carries HDR or Dolby Vision", int(new_hv), int(old_hv))
 
     new_px = incoming["display_pixels"]
     old_px = incumbent["display_pixels"]
@@ -284,33 +325,19 @@ def compare(incoming, incumbent):
             "gate 2 deferred, bars incoming %d px, incumbent %d px", new_bars, old_bars
         )
     elif new_px and old_px:
-        larger = max(new_px, old_px)
-        if abs(new_px - old_px) / float(larger) > PIXEL_TOLERANCE:
-            return _decide(
-                2,
-                "the %s has the larger display resolution",
-                new_px,
-                old_px,
-                incoming,
-                incumbent,
-                notes,
-            )
+        if abs(new_px - old_px) / float(max(new_px, old_px)) > PIXEL_TOLERANCE:
+            _cast(votes, 2, "the %s has the larger display resolution", new_px, old_px)
     else:
         notes.append("display pixel count unavailable on one side, gate 2 skipped")
 
     new_pic = incoming.get("picture_pixels")
     old_pic = incumbent.get("picture_pixels")
     if new_pic and old_pic:
-        larger = max(new_pic, old_pic)
-        if abs(new_pic - old_pic) / float(larger) > PIXEL_TOLERANCE:
-            return _decide(
-                3,
+        if abs(new_pic - old_pic) / float(max(new_pic, old_pic)) > PIXEL_TOLERANCE:
+            _cast(
+                votes, 3,
                 "the %s has the larger real picture area once baked-in bars are discounted",
-                new_pic,
-                old_pic,
-                incoming,
-                incumbent,
-                notes,
+                new_pic, old_pic,
             )
     else:
         notes.append("cropdetect not run on both sides, gate 3 skipped")
@@ -318,41 +345,61 @@ def compare(incoming, incumbent):
     new_ch = incoming["audio_channels_max"]
     old_ch = incumbent["audio_channels_max"]
     if new_ch != old_ch and new_ch and old_ch:
-        return _decide(
-            4,
-            "the %s has the higher audio channel count",
-            new_ch,
-            old_ch,
-            incoming,
-            incumbent,
-            notes,
-        )
+        _cast(votes, 4, "the %s has the higher audio channel count", new_ch, old_ch)
 
     new_depth = incoming["bit_depth"]
     old_depth = incumbent["bit_depth"]
     if new_depth != old_depth:
-        return _decide(
-            5,
-            "the %s has the greater bit depth",
-            new_depth,
-            old_depth,
-            incoming,
-            incumbent,
-            notes,
+        _cast(votes, 5, "the %s has the greater bit depth", new_depth, old_depth)
+
+    new_rate = normalised_bitrate(incoming.get("video_bitrate"), incoming.get("codec"))
+    old_rate = normalised_bitrate(incumbent.get("video_bitrate"), incumbent.get("codec"))
+    if new_rate and old_rate:
+        if abs(new_rate - old_rate) / float(max(new_rate, old_rate)) > BITRATE_TOLERANCE:
+            _cast(
+                votes, 6,
+                "the %s has the higher video bitrate once weighted for codec efficiency",
+                int(round(new_rate)), int(round(old_rate)),
+            )
+    else:
+        notes.append("video bitrate unavailable on one side, gate 6 skipped")
+
+    wins = [v for v in votes if v["verdict"] == WIN]
+    losses = [v for v in votes if v["verdict"] == LOSS]
+
+    if wins and losses:
+        detail = "; ".join(
+            "gate %d favours the %s"
+            % (v["gate"], "incoming" if v["verdict"] == WIN else "incumbent")
+            for v in votes
+        )
+        reason = "the gates disagree (%s), a human decision is required" % detail
+        log.info(
+            "comparison contradictory across %d gates, holding for review: %s",
+            len(votes), detail,
+        )
+        return Comparison(AMBIGUOUS, None, reason, incoming, incumbent, notes, votes)
+
+    if votes:
+        verdict = WIN if wins else LOSS
+        decided = votes[0]
+        reason = decided["reason"]
+        if len(votes) > 1:
+            reason = "%s (%d gates agree)" % (reason, len(votes))
+        log.info("comparison %s at gate %d: %s", verdict, decided["gate"], reason)
+        return Comparison(
+            verdict, decided["gate"], reason, incoming, incumbent, notes, votes
         )
 
     new_rank = _pedigree_rank(incoming.get("pedigree"))
     old_rank = _pedigree_rank(incumbent.get("pedigree"))
     if new_rank >= 0 and old_rank >= 0 and new_rank != old_rank:
         notes.append("decided on release naming, which is a weak signal")
-        return _decide(
-            6,
-            "the %s has the better source pedigree",
-            new_rank,
-            old_rank,
-            incoming,
-            incumbent,
-            notes,
+        _cast(votes, 7, "the %s has the better source pedigree", new_rank, old_rank)
+        decided = votes[0]
+        log.info("comparison %s at gate 7: %s", decided["verdict"], decided["reason"])
+        return Comparison(
+            decided["verdict"], 7, decided["reason"], incoming, incumbent, notes, votes
         )
 
     log.info("comparison ambiguous, no gate produced a clear difference")
@@ -363,4 +410,5 @@ def compare(incoming, incumbent):
         incoming,
         incumbent,
         notes,
+        votes,
     )

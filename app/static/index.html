@@ -178,7 +178,8 @@ async function refresh() {
           <td class="name">${esc(t.source_path.split("/").pop())}</td>
           <td>${esc(t.kind || "")}</td>
           <td>${esc(t.display_stage || t.stage)}${stageDetail(t, prog[t.id])}${
-            t.files_gone ? '<span class="tag">files gone</span>' : ""}</td>
+            t.files_gone ? '<span class="tag">files gone</span>'
+            : t.quarantine_present ? '<span class="tag">files quarantined</span>' : ""}</td>
           <td>${esc(t.encoder || "")}</td>
           <td>${t.grain_ratio === null || t.grain_ratio === undefined ? "" : esc(t.grain_ratio)}</td>
           <td style="white-space:nowrap">${

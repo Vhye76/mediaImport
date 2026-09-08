@@ -229,6 +229,7 @@ def _video_summary(s):
         "frame_rate": _ratio(s.get("r_frame_rate"), 0.0),
         "avg_frame_rate": _ratio(s.get("avg_frame_rate"), 0.0),
         "frame_count": _frame_count(s),
+        "bitrate": _video_bitrate(s),
         "duration": _float_or_none(s.get("duration")),
         "color_primaries": s.get("color_primaries"),
         "color_transfer": s.get("color_transfer"),
@@ -252,6 +253,38 @@ def _frame_count(s):
                 pass
     try:
         return int(s.get("nb_frames"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _hms_to_seconds(value):
+    try:
+        hours, minutes, seconds = str(value).split(":")
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except (TypeError, ValueError):
+        return None
+
+
+def _video_bitrate(s):
+    tags = {str(k).upper(): v for k, v in (s.get("tags") or {}).items()}
+    for key in ("BPS", "BPS-ENG"):
+        value = tags.get(key)
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+    duration = _float_or_none(s.get("duration")) or _hms_to_seconds(tags.get("DURATION"))
+    if duration:
+        for key in ("NUMBER_OF_BYTES", "NUMBER_OF_BYTES-ENG"):
+            value = tags.get(key)
+            if value:
+                try:
+                    return int(round(int(value) * 8 / duration))
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+    try:
+        return int(s.get("bit_rate"))
     except (TypeError, ValueError):
         return None
 

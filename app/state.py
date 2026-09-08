@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS titles (
     job_id        TEXT,
     work_path     TEXT,
     output_path   TEXT,
+    quarantine_path TEXT,
     encoder       TEXT,
     grain_ratio   REAL,
     probe_json    TEXT,

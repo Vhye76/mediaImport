@@ -199,7 +199,7 @@ GET  /api/logs                    log tail
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-Where a title was compared against a library incumbent, the dashboard shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, the row that decided the outcome is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
+Where a title was compared against a library incumbent, the dashboard shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, every row whose gate cast a vote is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
 
 ## Build and validate
 
@@ -247,7 +247,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.0.8, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
+Current version 0.0.9, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

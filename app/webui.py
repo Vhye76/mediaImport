@@ -134,9 +134,13 @@ class WebUI:
         row["complete"] = state.is_complete(row.get("stage"))
         output = row.get("output_path")
         source = row.get("source_path")
+        quarantined = row.get("quarantine_path")
         row["output_present"] = bool(output) and os.path.exists(output)
         row["source_present"] = bool(source) and os.path.exists(source)
-        row["files_gone"] = not row["output_present"] and not row["source_present"]
+        row["quarantine_present"] = bool(quarantined) and os.path.exists(quarantined)
+        row["files_gone"] = not (
+            row["output_present"] or row["source_present"] or row["quarantine_present"]
+        )
         return row
 
     def decide(self, title_id, action):

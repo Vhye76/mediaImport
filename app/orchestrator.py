@@ -827,7 +827,10 @@ class Orchestrator:
         self.layout.move_file(source, destination)
         log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
-        self.store.advance(title_id, state.CLEANUP, "source retired, work area wiped")
+        self.store.advance(
+            title_id, state.CLEANUP, "source retired, work area wiped",
+            quarantine_path=destination,
+        )
 
     def _quarantine(self, title_id, source, reason):
         if not os.path.exists(source):
@@ -842,7 +845,9 @@ class Orchestrator:
             return "quarantined"
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
-        self.store.advance(title_id, state.QUARANTINED, reason, reason=reason)
+        self.store.advance(
+            title_id, state.QUARANTINED, reason, reason=reason, quarantine_path=destination
+        )
         log.info("title %s quarantined %s: %s", title_id, os.path.basename(source), reason)
         return "quarantined"
 
