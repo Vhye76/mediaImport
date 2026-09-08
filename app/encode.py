@@ -9,7 +9,9 @@ SD_DISPLAY_HEIGHT = 720
 X265_COMMON = "psy-rd=2.0:psy-rdoq=1.0:deblock=-1,-1"
 AQ_DEFAULT = "aq-mode=3"
 AQ_FILM = "aq-mode=4:tune=grain"
-X265_SDR_COLOUR = "colorprim=smpte170m:transfer=smpte170m:colormatrix=smpte170m:range=limited"
+SDR_PRIMARIES_SD = "smpte170m"
+SDR_PRIMARIES_HD = "bt709"
+X265_SDR_COLOUR = "colorprim=%s:transfer=%s:colormatrix=%s:range=limited"
 
 X265_PRESET = "slow"
 SVTAV1_PRESET = "4"
@@ -189,8 +191,10 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
 
 
 #----- Command fragments
-def _needs_sdr_stamp(video):
-    return not video.get("hdr") and not video.get("colour_tagged")
+def sdr_stamp_primaries(video):
+    if video.get("hdr") or video.get("colour_tagged"):
+        return None
+    return SDR_PRIMARIES_SD if is_sd(video) else SDR_PRIMARIES_HD
 
 
 def _map_args():
@@ -207,11 +211,11 @@ def _tail_args():
     return ["-c:a", "copy", "-c:s", "copy", "-map_metadata", "0"]
 
 
-def _sdr_ffmpeg_colour_args():
+def _sdr_ffmpeg_colour_args(primaries):
     return [
-        "-color_primaries", "smpte170m",
-        "-color_trc", "smpte170m",
-        "-colorspace", "smpte170m",
+        "-color_primaries", primaries,
+        "-color_trc", primaries,
+        "-colorspace", primaries,
         "-color_range", "tv",
     ]
 
@@ -238,13 +242,13 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     if filters:
         args += ["-vf", ",".join(filters)]
 
-    stamp = _needs_sdr_stamp(video)
+    stamp = sdr_stamp_primaries(video)
 
     if decision.encoder == LIBX265:
         aq = AQ_FILM if decision.grain else AQ_DEFAULT
         params = "%s:%s" % (aq, X265_COMMON)
         if stamp:
-            params = "%s:%s" % (params, X265_SDR_COLOUR)
+            params = "%s:%s" % (params, X265_SDR_COLOUR % (stamp, stamp, stamp))
         params = "%s:pools=%d" % (params, _threads(cfg))
         args += [
             "-c:v", "libx265",
@@ -266,7 +270,7 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
             "-svtav1-params", "%s:lp=%d" % (SVTAV1_PARAMS, _threads(cfg)),
         ]
         if stamp:
-            args += _sdr_ffmpeg_colour_args()
+            args += _sdr_ffmpeg_colour_args(stamp)
 
     elif decision.encoder == AV1_QSV:
         args += [
@@ -275,7 +279,7 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
             "-global_quality", str(crf if crf is not None else QSV_GLOBAL_QUALITY),
         ]
         if stamp:
-            args += _sdr_ffmpeg_colour_args()
+            args += _sdr_ffmpeg_colour_args(stamp)
 
     else:
         raise ValueError("unknown encoder %r" % decision.encoder)

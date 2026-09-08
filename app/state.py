@@ -20,7 +20,7 @@ ENCODING = "ENCODING"
 ENCODED = "ENCODED"
 VERIFIED = "VERIFIED"
 PUBLISHED = "PUBLISHED"
-RETIRED = "RETIRED"
+CLEANUP = "CLEANUP"
 
 HELD = "HELD"
 QUARANTINED = "QUARANTINED"
@@ -28,10 +28,40 @@ FAILED = "FAILED"
 
 PIPELINE = (
     DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED, STAGED, REMUXED,
-    TAGGED, READY, ENCODING, ENCODED, VERIFIED, PUBLISHED, RETIRED,
+    TAGGED, READY, ENCODING, ENCODED, VERIFIED, PUBLISHED, CLEANUP,
 )
-TERMINAL = (RETIRED, QUARANTINED)
+COMPLETE = (PUBLISHED, CLEANUP)
+TERMINAL = (CLEANUP, QUARANTINED)
 STOPPED = (HELD, QUARANTINED, FAILED)
+
+DISPLAY_NAMES = {
+    DETECTED: "queued",
+    PROBED: "probed",
+    SCREENED: "screened",
+    IDENTIFIED: "identified",
+    COMPARED: "compared",
+    STAGED: "copying",
+    REMUXED: "remuxed",
+    TAGGED: "tagged",
+    READY: "ready",
+    ENCODING: "encoding",
+    ENCODED: "encoded",
+    VERIFIED: "verified",
+    PUBLISHED: "ready to promote",
+    CLEANUP: "ready to promote",
+    HELD: "needs a decision",
+    QUARANTINED: "rejected",
+    FAILED: "failed",
+}
+
+
+def display_name(stage):
+    return DISPLAY_NAMES.get(stage, (stage or "").lower())
+
+
+def is_complete(stage):
+    return stage in COMPLETE
+
 
 #----- Schema
 SCHEMA = """
@@ -56,6 +86,7 @@ CREATE TABLE IF NOT EXISTS titles (
     probe_json    TEXT,
     decision_json TEXT,
     compare_json  TEXT,
+    output_probe_json TEXT,
     reason        TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
     retry_after   REAL,
@@ -120,6 +151,7 @@ class Store:
         d["probe"] = _unjson(d.pop("probe_json", None))
         d["decision"] = _unjson(d.pop("decision_json", None))
         d["comparison"] = _unjson(d.pop("compare_json", None))
+        d["output_probe"] = _unjson(d.pop("output_probe_json", None))
         d["overridden"] = bool(d.get("overridden"))
         return d
 
@@ -193,10 +225,11 @@ class Store:
         log.debug("title %s fields updated: %s", title_id, ", ".join(sorted(fields)))
         if not fields:
             return
-        for key in ("probe", "decision", "comparison"):
+        for key in ("probe", "decision", "comparison", "output_probe"):
             if key in fields:
                 column = {"probe": "probe_json", "decision": "decision_json",
-                          "comparison": "compare_json"}[key]
+                          "comparison": "compare_json",
+                          "output_probe": "output_probe_json"}[key]
                 fields[column] = _json(fields.pop(key))
         fields["updated_at"] = time.time()
         assignments = ", ".join("%s = ?" % k for k in fields)
@@ -245,6 +278,35 @@ class Store:
                 (title_id, stage, detail, time.time()),
             )
             self._db.commit()
+
+    def reset_for_reimport(self, title_id):
+        self.advance(
+            title_id,
+            DETECTED,
+            "source reappeared in import, reset for a fresh run",
+            kind=None,
+            title=None,
+            year=None,
+            show=None,
+            season=None,
+            episode=None,
+            tmdb=None,
+            imdb=None,
+            tvdb=None,
+            job_id=None,
+            work_path=None,
+            output_path=None,
+            encoder=None,
+            grain_ratio=None,
+            probe=None,
+            decision=None,
+            comparison=None,
+            output_probe=None,
+            reason=None,
+            attempts=0,
+            retry_after=None,
+            overridden=0,
+        )
 
     def forget(self, title_id):
         with self._lock:

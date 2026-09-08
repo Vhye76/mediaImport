@@ -234,6 +234,18 @@ class Orchestrator:
                     continue
                 existing = self.store.by_source(path)
                 if existing:
+                    if existing["stage"] in state.TERMINAL:
+                        log.info(
+                            "%s reappeared in import after %s, treating it as a new import",
+                            name, existing["stage"],
+                        )
+                        self.store.reset_for_reimport(existing["id"])
+                        self.queue.put(existing["id"])
+                    else:
+                        log.info(
+                            "skipping %s, title %s already claims this path at stage %s",
+                            name, existing["id"], existing["stage"],
+                        )
                     continue
                 title_id = self.store.upsert_source(path)
                 log.info("detected %s", path)
@@ -284,12 +296,17 @@ class Orchestrator:
             work = self._remux(title_id, work, source)
             if not self.cfg.dry_run:
                 container = probemod.probe(work).container
-            self._tag(title_id, work, identity, kind)
+            carry = self._tag(title_id, work, identity, kind)
             self._ready(title_id, work, identity, kind)
-            work = self._encode(title_id, work, workdir, container, kind, source)
-            self._verify(title_id, work, source)
+            work = self._encode(title_id, work, workdir, container, kind, source, identity, carry)
+            self._verify(title_id, work, source, identity, kind)
             self._publish(title_id, work, identity, kind)
-            self._retire(title_id, source, job_id)
+            try:
+                self._retire(title_id, source, job_id)
+            except Exception as exc:
+                log.exception("cleanup failed for %s after a successful publish", source)
+                self.store.update(title_id, reason="cleanup failed: %s" % exc)
+                self.store.record(title_id, state.PUBLISHED, "cleanup failed: %s" % exc)
         except HoldError as exc:
             log.warning("held: %s: %s", source, exc)
             self.store.hold(title_id, str(exc))
@@ -374,9 +391,10 @@ class Orchestrator:
         except probemod.ProbeError as exc:
             self.store.advance(title_id, state.COMPARED, "incumbent unreadable: %s" % exc)
             return
+        crops = self._crop_both(container, incumbent, source, incumbent_path)
         result = compare.compare(
-            compare.attributes(container, source),
-            compare.attributes(incumbent, incumbent_path),
+            compare.measure(source, crop=crops[0]),
+            compare.measure(incumbent_path, crop=crops[1]),
         )
         self.store.update(title_id, comparison=result.as_dict())
         if result.is_loss:
@@ -384,6 +402,34 @@ class Orchestrator:
         if result.verdict == compare.AMBIGUOUS:
             raise HoldError("comparison against the incumbent was inconclusive")
         self.store.advance(title_id, state.COMPARED, result.reason)
+
+    def _crop_both(self, incoming, incumbent, incoming_path, incumbent_path):
+        new_video = incoming.get("video") or {}
+        old_video = incumbent.get("video") or {}
+        if not (
+            standards.is_letterbox_candidate(new_video)
+            or standards.is_letterbox_candidate(old_video)
+        ):
+            log.debug("neither side is a letterbox candidate, gate 3 cropdetect not run")
+            return None, None
+        log.info("running cropdetect on both sides for the letterbox gate")
+        pairs = []
+        for path, video, container in (
+            (incoming_path, new_video, incoming),
+            (incumbent_path, old_video, incumbent),
+        ):
+            try:
+                found = media.detect_crop(path, video, container=container)
+                if found is None:
+                    found = {
+                        "bars_px": 0,
+                        "picture_pixels": int(video.get("display_pixels") or 0) or None,
+                    }
+                pairs.append(found)
+            except Exception as exc:
+                log.warning("cropdetect failed on %s: %s", os.path.basename(str(path)), exc)
+                pairs.append(None)
+        return pairs[0], pairs[1]
 
     def _find_incumbent(self, identity, kind):
         root = self.layout.libraries.get(kind)
@@ -475,26 +521,29 @@ class Orchestrator:
         )
         return current
 
+    def _tag_xml(self, identity, kind, carry):
+        if kind == "movie":
+            return tags.build_movie_xml(
+                identity["title"], identity["year"], identity["tmdb"], identity["imdb"], carry
+            )
+        return tags.build_tv_xml(
+            identity["show"], identity["tvdb"], identity["tmdb"],
+            identity["season"], identity["title"], identity["episode"], carry,
+        )
+
+    def _apply_tags(self, path, identity, kind, carry):
+        xml = self._tag_xml(identity, kind, carry)
+        return tags.write_tags(path, xml, segment_title=identity["title"])
+
     def _tag(self, title_id, work, identity, kind):
         if self.cfg.dry_run:
             log.info("DRY RUN would write %s tags to %s", kind, work)
             self.store.advance(title_id, state.TAGGED, "dry run")
-            return
-        existing = tags.read_tags(work)
-        carry = tags.carry_forward(existing)
-        if kind == "movie":
-            xml = tags.build_movie_xml(
-                identity["title"], identity["year"], identity["tmdb"], identity["imdb"], carry
-            )
-            segment = identity["title"]
-        else:
-            xml = tags.build_tv_xml(
-                identity["show"], identity["tvdb"], identity["tmdb"],
-                identity["season"], identity["title"], identity["episode"], carry,
-            )
-            segment = identity["title"]
-        ratio = tags.write_tags(work, xml, segment_title=segment)
+            return {}
+        carry = tags.carry_forward(tags.read_tags(work))
+        ratio = self._apply_tags(work, identity, kind, carry)
         self.store.advance(title_id, state.TAGGED, "statistics byte-sum ratio %.4f" % ratio)
+        return carry
 
     def _ready(self, title_id, work, identity, kind):
         if self.cfg.dry_run:
@@ -507,7 +556,7 @@ class Orchestrator:
             raise HoldError("failed readiness checks: %s" % "; ".join(problems))
         self.store.advance(title_id, state.READY, "readiness checks passed")
 
-    def _encode(self, title_id, work, workdir, container, kind, source):
+    def _encode(self, title_id, work, workdir, container, kind, source, identity, carry):
         row = self.store.get(title_id)
         override = read_sidecar(os.path.dirname(source))
         video = container["video"]
@@ -593,6 +642,8 @@ class Orchestrator:
         self._progress.pop(title_id, None)
         tags.refresh_statistics(target)
         media.fix_flags_and_language(target)
+        self._apply_tags(target, identity, kind, carry)
+        tags.refresh_statistics(target)
         os.remove(work)
         self.store.advance(
             title_id,
@@ -602,7 +653,7 @@ class Orchestrator:
         )
         return target
 
-    def _verify(self, title_id, work, source):
+    def _verify(self, title_id, work, source, identity, kind):
         if self.cfg.dry_run:
             self.store.advance(title_id, state.VERIFIED, "dry run")
             return
@@ -619,6 +670,13 @@ class Orchestrator:
         if ratio <= tags.STATS_RATIO_FLOOR:
             raise HoldError("track statistics missing after encode, byte-sum ratio %.4f" % ratio)
         notes.append("statistics ratio %.4f" % ratio)
+        ok, problems = tags.readiness(
+            work, kind, identity["title"], show=identity.get("show")
+        )
+        if not ok:
+            raise HoldError("published file failed readiness: %s" % "; ".join(problems))
+        notes.append("tag structure verified")
+        self.store.update(title_id, output_probe=compare.measure(work))
         self.store.advance(title_id, state.VERIFIED, "; ".join(notes))
 
     def _publish(self, title_id, work, identity, kind):
@@ -659,13 +717,13 @@ class Orchestrator:
 
     def _retire(self, title_id, source, job_id):
         if self.cfg.dry_run:
-            self.store.advance(title_id, state.RETIRED, "dry run")
+            self.store.advance(title_id, state.CLEANUP, "dry run")
             return
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
         log.info("retired %s to quarantine", os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
-        self.store.advance(title_id, state.RETIRED, "source retired to quarantine")
+        self.store.advance(title_id, state.CLEANUP, "source retired, work area wiped")
 
     def _quarantine(self, title_id, source, reason):
         if not os.path.exists(source):

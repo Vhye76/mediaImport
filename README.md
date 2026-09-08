@@ -15,7 +15,38 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
 
 Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own before it stops and waits for a person.
 
-Nothing is ever deleted.  Sources are retired to 'quarantine/' after the title completes.
+Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.
+
+## Stages
+
+Every title carries a stage, shown in the Stage column of the dashboard.  These are the values you will see there and what each one means.
+
+| Stage | Shown as | Meaning |
+| --- | --- | --- |
+| DETECTED | queued | Seen in 'import/', size stable across two polls and untouched for MTIME_QUIET seconds.  Waiting for a free worker.  A title returns here when you press Retry or Force through, and when a retry backoff expires. |
+| PROBED | probed | One ffprobe pass done.  Classified as a movie or as television. |
+| SCREENED | screened | Passed the minimum standards gate. |
+| IDENTIFIED | identified | Provider IDs resolved and verified.  The canonical name is settled from here on. |
+| COMPARED | compared | Checked against whatever the library already holds.  Also the value recorded when no library is mounted, when there is no incumbent, and when the incumbent could not be read. |
+| STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
+| REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
+| TAGGED | tagged | Matroska tag block and segment title written. |
+| READY | ready | Passed the readiness gate and is queued for an encoder slot. |
+| ENCODING | encoding | An encoder is running.  Percent complete, estimated time remaining and speed appear beside it. |
+| ENCODED | encoded | The encoder finished, or the router chose passthrough and no re-encode was needed. |
+| VERIFIED | verified | Duration, track statistics and tag structure checked on the finished file. |
+| PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned. |
+| CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
+
+Three further values sit outside the pipeline.
+
+| Stage | Shown as | Meaning |
+| --- | --- | --- |
+| HELD | needs a decision | A gate failed and the title is waiting for you.  The reason is written out, and the decision queue offers Retry, Force through and Discard. |
+| QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'. |
+| FAILED | failed | An unexpected error.  Nothing was moved or deleted. |
+
+A row marked "files gone" refers to a title whose files you have since removed by hand.  It is a record of what the pipeline did rather than something still on disk, and the Forget button removes the record.  Forget only removes a database row;  it never deletes a file.
 
 ## Layout
 
@@ -162,11 +193,13 @@ No authentication.  Anyone who can reach the port can drive it, including forcin
 GET  /                            dashboard
 GET  /api/status                  config, GPU state, encode space, queue depth, stage counts
 GET  /api/titles                  every title
-GET  /api/titles/<id>             one title with its stage history
+GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue
 GET  /api/logs                    log tail
-POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard"}
+POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
+
+Where a title was compared against a library incumbent, the dashboard shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, the row that decided the outcome is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
 
 ## Build and validate
 

@@ -228,6 +228,7 @@ def _video_summary(s):
         "cropdetect_limit": cropdetect_limit(depth),
         "frame_rate": _ratio(s.get("r_frame_rate"), 0.0),
         "avg_frame_rate": _ratio(s.get("avg_frame_rate"), 0.0),
+        "frame_count": _frame_count(s),
         "duration": _float_or_none(s.get("duration")),
         "color_primaries": s.get("color_primaries"),
         "color_transfer": s.get("color_transfer"),
@@ -238,6 +239,35 @@ def _video_summary(s):
         "dolby_vision": dv is not None,
         "dv": dv,
     }
+
+
+def _frame_count(s):
+    tags = s.get("tags") or {}
+    for key in ("NUMBER_OF_FRAMES", "NUMBER_OF_FRAMES-eng", "nb_frames"):
+        value = tags.get(key)
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                pass
+    try:
+        return int(s.get("nb_frames"))
+    except (TypeError, ValueError):
+        return None
+
+
+def count_video_frames(path):
+    data = ffprobe_json(
+        path,
+        ["-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets"],
+    )
+    streams = data.get("streams") or []
+    if not streams:
+        return None
+    try:
+        return int(streams[0].get("nb_read_packets"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _dolby_vision(s):

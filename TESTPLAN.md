@@ -72,13 +72,13 @@ Unless a case says otherwise, reset by stopping the container, emptying import, 
 **T-04b  A retire is a rename when everything is under one root.**
 
 - **Start:**  the collapsed layout from T-04a, a resolvable title in import.
-- **Do:**  run it to RETIRED, then compare the inode of the source before and of the quarantined file after.
+- **Do:**  run it to CLEANUP, then compare the inode of the source before and of the quarantined file after.
 - **Expect:**  the same inode.  A rename, not a copy.
 
 **T-04c  A retire still works when encode is on another pool.**
 
 - **Start:**  MEDIA_ENCODE mounted on separate storage.
-- **Do:**  run a title to RETIRED.
+- **Do:**  run a title to CLEANUP.
 - **Expect:**  publish copies, retire renames, both succeed, and no zero-byte file is left in quarantine.
 
 **T-05  A missing certificate refuses to start.**
@@ -209,7 +209,7 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 
 - **Start:**  'DRY_RUN=1', a resolvable file in import.
 - **Do:**  wait for a terminal stage.
-- **Expect:**  RETIRED, every stage logging intent, no file created anywhere, and no FAILED state.
+- **Expect:**  CLEANUP, every stage logging intent, no file created anywhere, and no FAILED state.
 
 **T-84  Discard on a missing source removes the row.**
 
@@ -289,9 +289,14 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 
 - **T-56  The output codec matches the routed encoder.**  Cross-check T-31 to T-38.
 - **T-57  The output is 10-bit.**  Expect pix_fmt yuv420p10le on every encoded output.
-- **T-58  Colour is correct for the source.**  A tagged source keeps its properties.  An untagged NTSC DVD rip comes out smpte170m.  An HDR source keeps bt2020.  Record all three.
+- **T-58  Colour is correct for the source.**  Read the properties off the OUTPUT FILE, never off the command that produced it.  Four sources through the x265 path:  a tagged source keeps its own properties;  an untagged SD NTSC rip comes out smpte170m;  an untagged HD source comes out bt709;  an HDR source keeps bt2020.  Record all four.
+- **T-58a  The colour mechanism differs by path and must not be generalised.**  Run the untagged HD source and the untagged SD rip through both AV1 paths.  Expect the same four outcomes as T-58, produced by the three ffmpeg colour flags rather than by the params string.  The x265 path must still pass none of those three flags.
 - **T-59  Cover art is carried, not encoded.**  A source with an mjpeg poster.  Expect the output still carries an mjpeg attachment, not a second video stream.
 - **T-60  Audio and subtitles pass through unchanged.**  Expect codec and channel count identical in and out.
+
+- **T-60a  The published file carries a targeted tag block.**  Assert structurally on the file in 'complete/', not by grep:  every expected TargetType appears on its own Tag element, and no Simple Name anywhere contains a slash.  Run one movie and one episode.
+- **T-60b  Scraped metadata survives the encode.**  A source carrying an untargeted block of ACTOR, DIRECTOR, GENRE and SYNOPSIS.  Expect every one of those keys present on the published file.
+- **T-60c  Statistics survive the post-encode tag write.**  Record the byte-sum ratio on the published file.  Expect it above the floor and not zero.
 
 ## 11.  Publishing
 
@@ -326,6 +331,16 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **Start:**  container running with a job in flight.
 - **Do:**  start a second container, let it wait, then stop the first.
 - **Expect:**  the in-flight job's directory is intact when the second takes over.
+
+## 12a.  Comparison measurement and the state record
+
+- **T-70a  A speed-up is reported even though no gate acts on it.**  An incumbent that is a 25 fps speed-up of the same master as the incoming file.  Expect the comparison notes to name the differing frame rates at equal frame counts, and the UI row for frame rate to be marked as a difference no gate acted on.
+- **T-70b  Gate 3 fires with real numbers.**  An incumbent that is genuinely letterboxed against a correctly cropped incoming file.  Expect picture pixels populated on BOTH sides and the gate to decide, rather than the 'cropdetect not run on both sides' note.
+- **T-70c  The published output is the third column.**  Open the Compare dialog on a completed title.  Expect a Published column whose values match what ffprobe reports on the file in 'complete/'.
+- **T-70d  The dialog renders untrusted text as text.**  A source filename containing '&', '<' and a double quote.  Expect the characters displayed literally and no broken markup.
+- **T-70e  A removed file leaves a record that can be cleared.**  Take a title to CLEANUP, delete its quarantined source by hand, and refresh.  Expect the row marked 'files gone' and a Forget button.  Press it and expect the row to disappear.  Confirm no file was deleted by the container.
+- **T-70f  A re-imported source is processed, not skipped.**  After T-70e, drop the same source back into 'import/' under the same filename.  Expect it detected and processed rather than silently ignored.
+- **T-70g  A source still in flight is not processed twice.**  While a title is at ENCODING, confirm its path in 'import/' is skipped and that the skip is logged with the claiming title's stage.
 
 ## 13.  Web
 

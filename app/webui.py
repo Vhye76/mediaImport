@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 return self._json(200, self.app.status())
             if path == "/api/titles":
-                return self._json(200, self.app.store.all())
+                return self._json(200, [self.app.annotate(r) for r in self.app.store.all()])
             if path == "/api/held":
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
@@ -69,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                 if row is None:
                     return self._json(404, {"error": "no such title"})
                 row["history"] = self.app.store.history(title_id)
-                return self._json(200, row)
+                return self._json(200, self.app.annotate(row))
         except ValueError:
             return self._json(400, {"error": "bad request"})
         except Exception as exc:
@@ -127,10 +127,33 @@ class WebUI:
             return "".join(fh.readlines()[-lines:])
 
     #----- Operator decisions
+    def annotate(self, row):
+        if not row:
+            return row
+        row["display_stage"] = state.display_name(row.get("stage"))
+        row["complete"] = state.is_complete(row.get("stage"))
+        output = row.get("output_path")
+        source = row.get("source_path")
+        row["output_present"] = bool(output) and os.path.exists(output)
+        row["source_present"] = bool(source) and os.path.exists(source)
+        row["files_gone"] = not row["output_present"] and not row["source_present"]
+        return row
+
     def decide(self, title_id, action):
         row = self.store.get(title_id)
         if row is None:
             raise ValueError("no such title")
+
+        if action == "forget":
+            self.annotate(row)
+            if not row["files_gone"]:
+                raise ValueError(
+                    "title still has files on disk, remove them before forgetting it"
+                )
+            self.store.forget(title_id)
+            log.info("operator forgot title %s, its files are already gone", title_id)
+            return {"ok": True, "action": "forgotten"}
+
         if row["stage"] not in (state.HELD, state.FAILED):
             raise ValueError(
                 "title is not awaiting a decision, it is at %s" % row["stage"]
@@ -151,7 +174,7 @@ class WebUI:
             )
             log.info("operator discarded title %s: %s", title_id, outcome)
             return {"ok": True, "action": outcome}
-        raise ValueError("action must be one of keep, retry, override, discard")
+        raise ValueError("action must be one of keep, retry, override, discard, forget")
 
     def start(self):
         context = build_ssl_context(self.cfg)

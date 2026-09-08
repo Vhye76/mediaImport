@@ -176,9 +176,13 @@ READY        the readiness gate           fail -> HELD
 ENCODING     the encoder is running, progress and ETA on /api/status
 ENCODED      route per section 14, or pass through
 VERIFIED     duration, statistics
-PUBLISHED    move to complete/
-RETIRED      source to quarantine, encode job directory wiped
+PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
+CLEANUP      source to quarantine, encode job directory wiped
 ```
+
+PUBLISHED IS THE END OF THE PIPELINE FOR A PERSON;  CLEANUP IS HOUSEKEEPING.  Everything after PUBLISHED operates on the pipeline's own working areas and touches nothing the operator collects.  A CLEANUP failure therefore must never present a published title as failed.  Section 21 records the incident:  the encode, the verification and the publish had all completed and only the final move failed, and "the title landed in FAILED with the work already done."  The move fallback fixed that cause;  treating a housekeeping step as the terminus was the shape that let it mispresent, and PUBLISHED being terminal is what fixes the shape.  'state.COMPLETE' is the pair, and the dashboard reads it as one figure.
+
+THE TAG BLOCK IS WRITTEN TWICE, BEFORE AND AFTER THE ENCODE.  ffmpeg's Matroska demuxer renders a targeted tag into the global metadata dict as 'TARGETTYPE/NAME' and the muxer writes it back untargeted, so '-map_metadata 0' on the encode flattens a correct block into exactly the defect section 12 describes.  The pre-encode write and its readiness gate stay, because they are what stops a title before it costs encoder time.  The post-encode write is what makes the published file correct, and readiness runs a second time inside VERIFIED against the file that actually ships.  The carry-forward set is read from the pre-encode file:  'tags.carry_forward' skips any name containing a slash, so reading the flattened output would silently drop the scraped ACTOR, DIRECTOR, GENRE and SYNOPSIS keys.
 
 TWO ORDERINGS ARE LOAD BEARING.
 
@@ -237,6 +241,12 @@ Clear win proceeds.  Clear loss goes to quarantine with no encode spent.  Level 
 Gate 6 is last on purpose.  Source pedigree is inferred from release naming, which is exactly the kind of signal this project distrusts everywhere else, so it only ever breaks a tie that the five measurable gates could not, and it is flagged as a weak signal when it does.
 
 Gates 2 and 3 need both sides to be measurable.  When one side is missing the gate is skipped and the skip is recorded in the notes rather than silently treated as a tie.
+
+THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SIX IT GATES ON.  Anything measured and dropped is a defect rather than an omission.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such, because that is the case where the pipeline saw something and had no rule for it.  This was written after a title won on audio channel count while the incumbent's real disqualifier, a 25 fps PAL speed-up, was invisible to all six gates.
+
+'picture_pixels' had been hardcoded to None since the gate was written, so gate 3 had never fired on any title in the container's history and every comparison emitted the skip note.  Cropdetect now runs at COMPARED on both sides, and only when either side is a letterbox candidate, keeping the cheap-first rule from section 7.
+
+A PAL SPEED-UP IS DETECTED FROM THE PAIR, NOT FROM ONE FILE.  Equal frame counts within one frame at different frame rates means one side is speed-adjusted and the slower rate is correct.  That works at any resolution.  The single-file check in 'standards' keys on stored height and could not see a 1080p file at 25 fps carrying a 23.976 master's frame count.
 
 The container never touches the incumbent.  It is read, compared against, and left alone.
 
@@ -540,6 +550,8 @@ crop=1920:804:0:138     skip cropdetect and use this
 ### Two traps in the command shapes
 
 MAPPING.  Explicit maps, never '-map 0'.  A bare '-map 0' hands a V_MJPEG cover-art track to the video encoder, which re-encodes a poster as video.  Cover-art mjpeg is legitimate and must be carried, not encoded.  Use '-map 0:v:0 -map 0:a -map 0:s? -map 0:t? -map_chapters 0'.
+
+THE SDR STAMP IS A VALUE, NOT A FLAG.  An untagged SDR source is stamped smpte170m only when it is SD;  an untagged HD source is stamped bt709.  The original rule was written for untagged NTSC DVD rips and the code applied it at any resolution, which put a 601 matrix on a 1080p master and shifted every saturated colour.  SD is 'encode.is_sd', the same predicate router gate 2 uses, and it is defined once.
 
 COLOUR FLAGS, AND THE FIX THAT MUST NOT BE GENERALISED.  On the x265 path, ffmpeg's '-color_primaries', '-color_trc' and '-colorspace' suppress what '-x265-params' sets, so only the matrix lands.  Those three flags must NOT be passed on the x265 path; colour goes inside '-x265-params' instead, with '-color_range tv' alongside.
 

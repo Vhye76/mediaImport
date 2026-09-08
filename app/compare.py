@@ -33,22 +33,154 @@ def _pedigree_rank(label):
         return -1
 
 
-def attributes(container, path=None):
+MEASURED = (
+    ("path", "file", None),
+    ("codec", "video codec", None),
+    ("profile", "video profile", None),
+    ("dolby_vision", "Dolby Vision", 1),
+    ("hdr", "HDR", 1),
+    ("display_width", "display width", 2),
+    ("display_height", "display height", 2),
+    ("display_pixels", "display pixels", 2),
+    ("display_aspect", "display aspect", None),
+    ("stored_width", "stored width", None),
+    ("stored_height", "stored height", None),
+    ("sar", "sample aspect", None),
+    ("picture_pixels", "picture pixels after bars", 3),
+    ("letterbox_px", "baked-in letterbox px", 3),
+    ("audio_channels_max", "audio channels", 4),
+    ("audio_codecs", "audio codecs", None),
+    ("audio_tracks", "audio tracks", None),
+    ("audio_default_count", "default audio tracks", None),
+    ("bit_depth", "bit depth", 5),
+    ("pix_fmt", "pixel format", None),
+    ("pedigree", "source pedigree", 6),
+    ("frame_rate", "frame rate", None),
+    ("frame_count", "frame count", None),
+    ("duration_s", "runtime seconds", None),
+    ("colour_primaries", "colour primaries", None),
+    ("colour_transfer", "colour transfer", None),
+    ("colour_space", "colour space", None),
+    ("colour_tagged", "colour tagged", None),
+    ("subtitle_codecs", "subtitle codecs", None),
+    ("subtitle_tracks", "subtitle tracks", None),
+    ("subtitle_default_count", "default subtitle tracks", None),
+    ("foreign_tracks", "foreign language tracks", None),
+    ("chapters", "chapters", None),
+    ("cover_art", "cover art tracks", None),
+    ("segment_title", "segment title", None),
+    ("tag_structure", "tag structure", None),
+    ("statistics_ratio", "statistics byte-sum ratio", None),
+    ("size_bytes", "file size", None),
+)
+
+GATE_BY_ATTRIBUTE = {key: gate for key, _, gate in MEASURED if gate}
+
+
+def _joined(values):
+    seen = []
+    for value in values:
+        if value and value not in seen:
+            seen.append(value)
+    return ", ".join(seen) or None
+
+
+def attributes(container, path=None, crop=None, tag_structure=None, statistics_ratio=None):
     video = container.get("video") or {}
+    audio = container.get("audio") or []
+    subtitles = container.get("subtitles") or []
+    duration = video.get("duration") or container.get("container_duration")
     return {
         "path": str(path) if path else None,
         "codec": video.get("codec"),
+        "profile": video.get("profile"),
         "hdr": bool(video.get("hdr")),
         "dolby_vision": bool(video.get("dolby_vision")),
         "display_width": int(video.get("display_width") or 0),
         "display_height": int(video.get("display_height") or 0),
         "display_pixels": int(video.get("display_pixels") or 0),
+        "display_aspect": round(float(video.get("display_aspect") or 0.0), 3) or None,
+        "stored_width": int(video.get("width") or 0),
+        "stored_height": int(video.get("height") or 0),
+        "sar": round(float(video.get("sar") or 0.0), 4) or None,
         "bit_depth": int(video.get("bit_depth") or 8),
+        "pix_fmt": video.get("pix_fmt"),
+        "frame_rate": round(float(video.get("frame_rate") or 0.0), 5) or None,
+        "frame_count": int(video.get("frame_count") or 0) or None,
+        "duration_s": round(float(duration), 3) if duration else None,
+        "colour_primaries": video.get("color_primaries"),
+        "colour_transfer": video.get("color_transfer"),
+        "colour_space": video.get("color_space"),
+        "colour_tagged": bool(video.get("colour_tagged")),
         "audio_channels_max": int(container.get("audio_channels_max") or 0),
-        "picture_pixels": None,
+        "audio_codecs": _joined([a.get("codec") for a in audio]),
+        "audio_tracks": len(audio),
+        "audio_default_count": int(container.get("audio_default_count") or 0),
+        "subtitle_codecs": _joined([s.get("codec") for s in subtitles]),
+        "subtitle_tracks": len(subtitles),
+        "subtitle_default_count": int(container.get("subtitle_default_count") or 0),
+        "foreign_tracks": _joined(container.get("foreign_tracks") or []),
+        "chapters": int(container.get("chapters") or 0),
+        "cover_art": len(container.get("cover_art") or []),
+        "segment_title": container.get("segment_title"),
+        "picture_pixels": (crop or {}).get("picture_pixels"),
+        "letterbox_px": (crop or {}).get("bars_px"),
+        "tag_structure": tag_structure,
+        "statistics_ratio": statistics_ratio,
         "pedigree": pedigree(path) if path else None,
         "size_bytes": int(container.get("size_bytes") or 0),
     }
+
+
+def measure(path, crop=None):
+    from . import probe as probemod, tags as tagsmod
+
+    container = probemod.probe(path).container
+    video = container.get("video") or {}
+    if not video.get("frame_count"):
+        try:
+            video["frame_count"] = probemod.count_video_frames(path)
+        except probemod.ProbeError as exc:
+            log.debug("frame count unavailable on %s: %s", path, exc)
+    structure = None
+    ratio = None
+    try:
+        structure = "flattened" if tagsmod.is_flattened(tagsmod.read_tags(path)) else "targeted"
+    except Exception as exc:
+        log.debug("tag structure unreadable on %s: %s", path, exc)
+    try:
+        ratio = round(tagsmod.byte_sum_ratio(path), 4)
+    except Exception as exc:
+        log.debug("byte-sum ratio unreadable on %s: %s", path, exc)
+    return attributes(container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio)
+
+
+def speed_mismatch(incoming, incumbent):
+    new_frames = incoming.get("frame_count")
+    old_frames = incumbent.get("frame_count")
+    new_rate = incoming.get("frame_rate")
+    old_rate = incumbent.get("frame_rate")
+    if not (new_frames and old_frames and new_rate and old_rate):
+        return None
+    if abs(new_frames - old_frames) > 1:
+        return None
+    if abs(new_rate - old_rate) < 0.01:
+        return None
+    faster, slower = (
+        ("incoming", "incumbent") if new_rate > old_rate else ("incumbent", "incoming")
+    )
+    ratio = max(new_rate, old_rate) / min(new_rate, old_rate)
+    return (
+        "the %s carries the same frame count at %.3f fps against %.3f, a %.1f%% speed-up;"
+        " the %s runs at the correct rate"
+        % (
+            faster,
+            max(new_rate, old_rate),
+            min(new_rate, old_rate),
+            (ratio - 1.0) * 100.0,
+            slower,
+        )
+    )
 
 
 class Comparison:
@@ -68,37 +200,36 @@ class Comparison:
     def is_loss(self):
         return self.verdict == LOSS
 
-    def table(self):
+    def table(self, output=None):
         rows = []
-        for key in (
-            "codec",
-            "dolby_vision",
-            "hdr",
-            "display_width",
-            "display_height",
-            "display_pixels",
-            "picture_pixels",
-            "bit_depth",
-            "audio_channels_max",
-            "pedigree",
-            "size_bytes",
-        ):
-            rows.append(
-                {
-                    "attribute": key,
-                    "incoming": self.incoming.get(key),
-                    "incumbent": self.incumbent.get(key),
-                }
-            )
+        for key, label, gate in MEASURED:
+            new = self.incoming.get(key)
+            old = self.incumbent.get(key)
+            row = {
+                "attribute": key,
+                "label": label,
+                "gate": gate,
+                "decided": gate is not None and gate == self.gate,
+                "incoming": new,
+                "incumbent": old,
+                "differs": new != old,
+                "measurable": new is not None and old is not None,
+            }
+            if output is not None:
+                row["output"] = output.get(key)
+            rows.append(row)
         return rows
 
-    def as_dict(self):
+    def as_dict(self, output=None):
         return {
             "verdict": self.verdict,
             "gate": self.gate,
             "reason": self.reason,
             "notes": self.notes,
-            "table": self.table(),
+            "incoming_path": self.incoming.get("path"),
+            "incumbent_path": self.incumbent.get("path"),
+            "output_path": (output or {}).get("path"),
+            "table": self.table(output),
         }
 
     def __repr__(self):
@@ -121,6 +252,11 @@ def compare(incoming, incumbent):
         "comparing %s against %s",
         incoming.get("path"), incumbent.get("path"),
     )
+
+    speed = speed_mismatch(incoming, incumbent)
+    if speed:
+        notes.append(speed)
+        log.info("comparison speed check: %s", speed)
 
     new_hv = incoming["dolby_vision"] or incoming["hdr"]
     old_hv = incumbent["dolby_vision"] or incumbent["hdr"]
