@@ -25,6 +25,38 @@ def _collapse(s):
     return _WS.sub(" ", s).strip()
 
 
+TMDBID_IN_NAME = re.compile(r"\[tmdbid-(\d+)\]", re.I)
+IMDBID_IN_NAME = re.compile(r"\[imdbid-(tt\d+)\]", re.I)
+TVDBID_IN_NAME = re.compile(r"\[tvdbid-(\d+)\]", re.I)
+YEAR_IN_PARENS = re.compile(r"\((19\d{2}|20\d{2})\)")
+
+
+def ids_from_name(name):
+    s = str(name)
+    tmdb = TMDBID_IN_NAME.search(s)
+    imdb = IMDBID_IN_NAME.search(s)
+    tvdb = TVDBID_IN_NAME.search(s)
+    year = YEAR_IN_PARENS.search(s)
+    found = {
+        "tmdb": tmdb.group(1) if tmdb else None,
+        "imdb": imdb.group(1) if imdb else None,
+        "tvdb": tvdb.group(1) if tvdb else None,
+        "year": int(year.group(1)) if year else None,
+    }
+    if any(found.values()):
+        log.debug("ids parsed from %r: %s", s, found)
+    return found
+
+
+def title_before_ids(name):
+    s = str(name)
+    s = TMDBID_IN_NAME.sub(" ", s)
+    s = IMDBID_IN_NAME.sub(" ", s)
+    s = TVDBID_IN_NAME.sub(" ", s)
+    s = YEAR_IN_PARENS.sub(" ", s)
+    return _collapse(s)
+
+
 def to_filename(title):
     s = str(title)
     s = s.replace(EM_DASH, " - ").replace(EN_DASH, " - ")

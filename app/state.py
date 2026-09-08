@@ -235,6 +235,13 @@ class Store:
             )
             self._db.commit()
 
+    def forget(self, title_id):
+        with self._lock:
+            self._db.execute("DELETE FROM history WHERE title_id = ?", (title_id,))
+            self._db.execute("DELETE FROM titles WHERE id = ?", (title_id,))
+            self._db.commit()
+        log.debug("title %s removed from the store", title_id)
+
     def history(self, title_id, limit=200):
         with self._lock:
             cur = self._db.execute(

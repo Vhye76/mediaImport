@@ -142,7 +142,7 @@ def main():
 
     store = state.Store(layout.state_db)
     client = providermod.Client(layout.provider_cache)
-    provider = providermod.Provider(client)
+    provider = providermod.Provider(client, import_root=layout.imports)
 
     orchestrator = Orchestrator(cfg, layout, store, gpu_status, provider=provider)
     ui = webui.WebUI(cfg, orchestrator, store, log_path=log_path)

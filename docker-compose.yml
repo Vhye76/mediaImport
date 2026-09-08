@@ -1,7 +1,7 @@
 services:
   mediaimport:
     container_name: mediaimport
-    image: ghcr.io/Vhye76/mediaimport:latest
+    image: ghcr.io/vhye76/mediaimport:latest
     build: .
     restart: unless-stopped
 

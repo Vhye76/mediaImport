@@ -10,6 +10,7 @@ import urllib.request
 
 from . import VERSION
 from . import episodes as episodemod
+from . import tags as tagsmod
 from . import titles
 
 log = logging.getLogger("provider")
@@ -138,14 +139,53 @@ def _claims(entity, prop):
     return values
 
 
+RANK_ORDER = {"preferred": 2, "normal": 1}
+
+
+def _dated_claims(entity, prop):
+    rows = []
+    for claim in (entity.get("claims") or {}).get(prop, []):
+        if claim.get("rank") == "deprecated":
+            continue
+        value = ((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")
+        if not isinstance(value, dict) or not value.get("time"):
+            continue
+        rows.append(
+            {
+                "time": value["time"],
+                "precision": int(value.get("precision") or 0),
+                "rank": RANK_ORDER.get(claim.get("rank"), 1),
+            }
+        )
+    return rows
+
+
+def _best_date(entity, prop):
+    rows = _dated_claims(entity, prop)
+    if not rows:
+        return None
+    top_rank = max(r["rank"] for r in rows)
+    rows = [r for r in rows if r["rank"] == top_rank]
+    top_precision = max(r["precision"] for r in rows)
+    candidates = [r for r in rows if r["precision"] == top_precision]
+    chosen = sorted(candidates, key=lambda r: r["time"])[0]
+    log.debug(
+        "%s: chose %s from %d claim(s) at rank %d precision %d",
+        prop, chosen["time"], len(_dated_claims(entity, prop)),
+        chosen["rank"], chosen["precision"],
+    )
+    return chosen["time"]
+
+
 def _year(value):
     m = re.search(r"(\d{4})", str(value or ""))
     return int(m.group(1)) if m else None
 
 
 class Provider:
-    def __init__(self, client):
+    def __init__(self, client, import_root=None):
         self.client = client
+        self.import_root = os.path.normpath(str(import_root)) if import_root else None
 
     def search_entities(self, term, limit=20):
         url = "%s?%s" % (
@@ -170,12 +210,12 @@ class Provider:
         tmdb = _claims(entity, P_TMDB)
         imdb = _claims(entity, P_IMDB)
         tvdb = _claims(entity, P_TVDB) or _claims(entity, P_TVDB_SERIES)
-        released = _claims(entity, P_RELEASE) or _claims(entity, P_START)
+        released = _best_date(entity, P_RELEASE) or _best_date(entity, P_START)
         return {
             "tmdb": tmdb[0] if tmdb else None,
             "imdb": imdb[0] if imdb else None,
             "tvdb": tvdb[0] if tvdb else None,
-            "year": _year(released[0]) if released else None,
+            "year": _year(released) if released else None,
         }
 
     def verify_tmdb(self, kind, tmdb_id, title):
@@ -186,6 +226,82 @@ class Provider:
         needle = re.sub(r"[^a-z0-9]+", "", title.lower())
         haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
         return needle in haystack
+
+    def movie_candidates(self, source, container):
+        stem = os.path.splitext(os.path.basename(source))[0]
+        parent = os.path.basename(os.path.dirname(source))
+        rungs = []
+
+        embedded = tagsmod.movie_identity(source)
+        if embedded:
+            rungs.append((
+                "embedded tag",
+                {"tmdb": embedded.get("tmdb"), "imdb": embedded.get("imdb")},
+                embedded.get("title"),
+                embedded.get("year"),
+            ))
+
+        for label, name in (("filename ids", stem), ("folder ids", parent)):
+            ids = titles.ids_from_name(name)
+            if ids["tmdb"] and ids["imdb"]:
+                rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
+
+        segment = (container or {}).get("segment_title")
+        if segment:
+            rungs.append(("segment title", {}, segment, None))
+
+        guess, year = _clean_movie_name(stem)
+        if guess:
+            rungs.append(("filename", {}, guess, year))
+
+        directory = os.path.normpath(os.path.dirname(source))
+        if self.import_root and directory == self.import_root:
+            log.debug("file sits directly in the watched root, parent folder rung skipped")
+        else:
+            parent_guess, parent_year = _clean_movie_name(parent)
+            if parent_guess and parent_guess.lower() != (guess or "").lower():
+                rungs.append(("parent folder", {}, parent_guess, parent_year))
+
+        log.debug("identity ladder: %s", [r[0] for r in rungs])
+        return rungs
+
+    def identify_movie(self, source, container):
+        for rung, ids, title, year in self.movie_candidates(source, container):
+            resolved = self.accept_candidate(rung, ids, title, year)
+            if resolved is not None:
+                log.info(
+                    "identified from %s: %s (%s) tmdb=%s imdb=%s",
+                    rung, resolved.get("title"), resolved.get("year"),
+                    resolved.get("tmdb"), resolved.get("imdb"),
+                )
+                return resolved
+            log.debug("rung %s did not resolve", rung)
+        return None
+
+    def accept_candidate(self, rung, ids, title, year):
+        tmdb = (ids or {}).get("tmdb")
+        imdb = (ids or {}).get("imdb")
+        if tmdb and imdb and title and year:
+            if not self.verify_tmdb("movie", tmdb, title):
+                log.info(
+                    "%s carried tmdb %s but the TMDB page does not confirm %r, rejected",
+                    rung, tmdb, title,
+                )
+                return None
+            return {
+                "title": title,
+                "year": year,
+                "tmdb": tmdb,
+                "imdb": imdb,
+                "qid": None,
+                "identified_from": rung,
+            }
+        if not title:
+            return None
+        resolved = self.resolve_movie(title, year)
+        if resolved is not None:
+            resolved["identified_from"] = rung
+        return resolved
 
     def resolve_movie(self, title, year=None):
         term = "%s (%s film)" % (title, year) if year else "%s (film)" % title
@@ -261,11 +377,7 @@ class Provider:
         source = row["source_path"]
         name = os.path.splitext(os.path.basename(source))[0]
         if kind == "movie":
-            guess, year = _clean_movie_name(name)
-            resolved = self.resolve_movie(guess, year)
-            if resolved is None:
-                return None
-            return resolved
+            return self.identify_movie(source, container)
 
         show_guess = _clean_show_name(name, os.path.basename(os.path.dirname(source)))
         resolved = self.resolve_show(show_guess)

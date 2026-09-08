@@ -143,6 +143,60 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 - **Do:**  place a valid file, wait.
 - **Expect:**  the title retries, then reaches HELD after the retry ladder is exhausted.  Record the attempt count from '/api/titles/<id>'.
 
+**T-76  An embedded MOVIE tag identifies without a Wikidata search.**
+
+- **Start:**  empty import.
+- **Do:**  copy a published library file into import.
+- **Expect:**  resolved, and '/api/titles/<id>' stage detail reads "resolved <title> from embedded tag".
+
+**T-77  A '[tmdbid-N]' folder identifies from the path.**
+
+- **Start:**  empty import.
+- **Do:**  place a file inside a folder named 'Title (Year) [tmdbid-N] [imdbid-ttN]', tags stripped.
+- **Expect:**  resolved, detail reads "from folder ids".
+
+**T-78  A segment title identifies when nothing else does.**
+
+- **Start:**  empty import.
+- **Do:**  place a file whose name is meaningless but whose segment Info title is the real title.
+- **Expect:**  resolved, detail reads "from segment title".
+
+**T-79  A nameless file still holds.**
+
+- **Start:**  empty import.
+- **Do:**  place a file named 'futurepack-cls.mkv', no tags, no segment title.
+- **Expect:**  HELD, reason "provider ID could not be resolved and must never be guessed".
+
+**T-80  A wrong embedded ID is rejected and the ladder continues.**
+
+- **Start:**  empty import.
+- **Do:**  place a file whose MOVIE tag carries a TMDB id belonging to a different film, with a correct filename.
+- **Expect:**  the embedded rung is rejected, the filename rung resolves, detail reads "from filename".
+
+**T-81  A file in the watched root does not use the parent folder.**
+
+- **Start:**  empty import.
+- **Do:**  place an unidentifiable file directly in 'import/'.
+- **Expect:**  HELD.  No lookup is ever attempted for the term "import".
+
+**T-82  The release year is the release, not the placeholder.**
+
+- **Start:**  empty import, empty provider cache.
+- **Do:**  identify Futurama: Into the Wild Green Yonder.
+- **Expect:**  year 2009, not 2008.  Published folder reads '(2009)'.
+
+**T-83  DRY_RUN completes a title.**
+
+- **Start:**  'DRY_RUN=1', a resolvable file in import.
+- **Do:**  wait for a terminal stage.
+- **Expect:**  RETIRED, every stage logging intent, no file created anywhere, and no FAILED state.
+
+**T-84  Discard on a missing source removes the row.**
+
+- **Start:**  a held title whose source file has been renamed away.
+- **Do:**  POST 'discard' against it.
+- **Expect:**  the row is gone from '/api/titles', nothing written to quarantine, and the response action reads "forgotten".
+
 ## 5.  Comparison against the incumbent
 
 Each case needs a prepared library file and a prepared incoming file that differ on exactly one gate.

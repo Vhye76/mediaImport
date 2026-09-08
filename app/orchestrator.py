@@ -245,7 +245,8 @@ class Orchestrator:
             self._compare(title_id, container, identity, kind, source)
             workdir, work = self._stage(title_id, source, job_id, container)
             work = self._remux(title_id, work, source)
-            container = probemod.probe(work).container
+            if not self.cfg.dry_run:
+                container = probemod.probe(work).container
             self._tag(title_id, work, identity, kind)
             self._ready(title_id, work, identity, kind)
             work = self._encode(title_id, work, workdir, container, kind, source)
@@ -307,7 +308,8 @@ class Orchestrator:
         self.store.advance(
             title_id,
             state.IDENTIFIED,
-            "resolved %s" % identity.get("title"),
+            "resolved %s from %s"
+            % (identity.get("title"), identity.get("identified_from") or "provider search"),
             title=identity.get("title"),
             year=identity.get("year"),
             show=identity.get("show"),
@@ -607,12 +609,18 @@ class Orchestrator:
         self.store.advance(title_id, state.RETIRED, "source retired to quarantine")
 
     def _quarantine(self, title_id, source, reason):
+        if not os.path.exists(source):
+            log.info("source %s no longer exists, removing the title rather than quarantining", source)
+            self.store.forget(title_id)
+            return "forgotten"
         if self.cfg.dry_run:
             self.store.advance(title_id, state.QUARANTINED, reason)
-            return
+            return "quarantined"
         destination = self.layout.quarantine_path(source)
         os.replace(source, destination)
         self.store.advance(title_id, state.QUARANTINED, reason, reason=reason)
+        log.info("quarantined %s: %s", os.path.basename(source), reason)
+        return "quarantined"
 
     def status(self):
         return {

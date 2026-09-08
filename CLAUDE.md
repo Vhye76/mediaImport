@@ -4,7 +4,7 @@
 
 THIS FILE IS THE SOURCE OF TRUTH FOR THIS REPOSITORY.  It is the operating ruleset for the container:  what it must do, what it must never do, and why each rule exists.
 
-It is scoped deliberately.  The full media library standards, covering the workstation scripts, the NAS layout, ARM disc ripping, library-wide audits and the music library, live in a separate CLAUDE.md alongside those tools.  Where a rule here is derived from that document it is restated in full rather than cross-referenced, because this repository has to be readable on its own.
+It is scoped deliberately.  The full media library standards, covering the workstation scripts, the NAS layout, library-wide audits and the music library, live in a separate CLAUDE.md alongside those tools.  Where a rule here is derived from that document it is restated in full rather than cross-referenced, because this repository has to be readable on its own.
 
 Rules here carry the measurement or the incident that produced them.  That is not decoration.  A rule without its evidence gets "simplified" by the next person who reads it, and every one of these was written after something went wrong.
 
@@ -200,7 +200,7 @@ TELEVISION
   runtime at least 15 min
 ```
 
-The 40 minute movie floor exists because a 10 minute bonus featurette once qualified as a disc's main feature and produced two wrong rips.  The floor is the guard.
+The 40 minute movie floor exists because a 10 minute bonus featurette once qualified as a disc's main feature and produced two wrong rips.  The floor is the guard, and section 26 records the ARM setting that was the actual cause.
 
 Failures go to 'hold/' with a written reason, never silently to quarantine.  The UI carries a per-title override that forces a title through anyway.
 
@@ -313,6 +313,43 @@ Resolution goes through Wikidata, then verification:  'wbsearchentities', then '
 Cross-check before writing an ID.  Fetch the TMDB page and confirm the title matches.  Wikidata provider IDs can be flat wrong:  P4983 for one show held the TMDB movie id of an unrelated 1984 Italian comedy.
 
 Searching a bare franchise name returns the franchise entity rather than the film.  Search 'Title (YYYY film)'.
+
+### The movie identity ladder
+
+A FILENAME IS THE LAST RESORT, NOT THE FIRST.  A file that has been through this pipeline, or that came back out of a library, already states what it is.  'provider.movie_candidates' builds an ordered list of candidates and the first that resolves and verifies wins:
+
+```
+1  embedded tag     TMDB, IMDB, TITLE and DATE_RELEASED from the MOVIE-targeted block
+2  filename ids     [tmdbid-N] and [imdbid-ttN] parsed out of the file name
+3  folder ids       the same, parsed out of the containing folder
+4  segment title    the Matroska segment Info title
+5  filename         the cleaned file name, the original behaviour
+6  parent folder    the containing folder name, skipped when it is the watched root
+```
+
+Rung 6 is skipped for a file sitting directly in 'import/', because the parent is then the mount itself and 'import' is not a film.
+
+A CANDIDATE CARRYING BOTH IDS AND A YEAR SKIPS THE WIKIDATA SEARCH, but it does NOT skip verification.  It still fetches the TMDB page and confirms the title appears on it, so a stale or hand-edited tag cannot inject a wrong ID.  A candidate that fails verification falls through to the next rung rather than failing the title.
+
+The rung that produced an identity is recorded in the stage detail, so a wrong match can be traced to its source instead of guessed at.
+
+Measured 2026-09-07:  a fresh ARM rip carries no tags, no segment title and no folder ids, so only rungs 5 and 6 apply to it.  This ladder improves re-imports and library-shaped files;  it does nothing for a disc rip whose name says nothing.
+
+### Choosing the release year
+
+P577 IS NOT A SINGLE VALUE.  A film routinely carries several release claims, one per country or event, and Wikidata returns them in no meaningful order.  Taking the first is wrong.
+
+Q1259032, Futurama: Into the Wild Green Yonder, as returned:
+
+```
++2008-01-01  precision 9   rank normal   no country
++2009-02-24  precision 11  rank normal   United States
++2009-03-20  precision 11  rank normal   Germany
+```
+
+The first is a year-only placeholder and the film is a 2009 release.  Taking claim zero produced 2008 and wrote it into the folder and the file name, so the error reached the library rather than merely the log.  Blade Runner carries the same shape:  four precision-11 claims and a '+1982-00-00' placeholder.
+
+'provider._best_date' selects instead:  drop deprecated rank, prefer preferred rank when present, then the highest precision, then the earliest date.  Verified against four entities.
 
 Lookups are cached on disk under 'config/cache', and the cache is consulted before any request is made.  INTERNET ACCESS IS REQUIRED.  Section 2 forbids guessing a provider ID, so identification is mandatory and there is no offline mode:  a provider that cannot be reached raises ProviderError, which the orchestrator treats as transient.  The title then retries five times over roughly 62 minutes with exponential backoff and holds with the reason written.  A title that cannot get metadata ends in 'hold/' and waits for a person, which is the intended outcome and not a failure of the pipeline.
 
@@ -747,7 +784,23 @@ THE CONTAINER DOES NOT VALIDATE THE CERTIFICATE IT IS GIVEN.  It does not inspec
 
 The healthcheck probes '127.0.0.1' with verification disabled.  That is not an accommodation for a weak certificate;  a certificate issued for the service hostname fails hostname verification against a loopback address no matter which CA signed it, and the probe is testing liveness rather than identity.
 
-## 26.  Out of scope
+## 26.  ARM configuration, upstream
+
+Automatic Ripping Machine produces most of what arrives in 'import/'.  It is not part of this container and this repository does not configure it, but its settings determine what the container is handed, so they are recorded here rather than only in the workstation standards.
+
+```
+MINLENGTH        2400     titles under 40 minutes are ineligible
+SKIP_TRANSCODE   true     ARM keeps MakeMKV output, largest file assumed main feature
+RIPMETHOD        mkv      MakeMKV direct
+PREVENT_99       false    setting true ejects the disc and rips nothing
+MAINFEATURE      inert    HandBrake option;  with SKIP_TRANSCODE true, HandBrake never runs
+```
+
+MINLENGTH IS THE SETTING THAT MATTERS.  At the previous value of 600 a 10 minute bonus featurette qualified as a disc's main feature and produced the wrong Cars and Chicken Little rips.  2400 is what makes the 40 minute movie floor in section 7 a second line of defence rather than the only one.
+
+WRONG-TITLE RIPS WERE CAUSED BY MINLENGTH, NOT DRM.  The Cars disc reported 8 titles, not 99, so PREVENT_99 was never in play.  Every 'HB_*' setting does nothing while SKIP_TRANSCODE is true, because HandBrake never runs.
+
+## 27.  Out of scope
 
 Not in this repository, and adding them needs a decision rather than a commit:
 

@@ -153,6 +153,7 @@ def probe(path):
         "chapters": len(data.get("chapters") or []),
         "container_duration": _float_or_none(fmt.get("duration")),
         "format_name": fmt.get("format_name"),
+        "segment_title": ((fmt.get("tags") or {}).get("title") or "").strip() or None,
         "size_bytes": int(fmt.get("size") or 0) or _size_on_disk(path),
         "audio_channels_max": max([a["channels"] for a in audio], default=0),
         "audio_default_count": sum(1 for a in audio if a["default"]),

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -224,6 +225,32 @@ def refresh_statistics(path):
         log.debug("byte-sum ratio after re-run: %.4f", ratio)
     log.info("track statistics refreshed, byte-sum ratio %.4f", ratio)
     return ratio
+
+
+def movie_identity(path):
+    try:
+        root = read_tags(path)
+    except (TagError, OSError):
+        return None
+    if root is None:
+        return None
+    for tag in root.findall("Tag"):
+        if _target_type(tag) != MOVIE:
+            continue
+        simples = _simples(tag)
+        released = simples.get("DATE_RELEASED") or ""
+        m = re.search(r"(\d{4})", released)
+        found = {
+            "title": (simples.get("TITLE") or "").strip() or None,
+            "tmdb": (simples.get("TMDB") or "").strip() or None,
+            "imdb": (simples.get("IMDB") or "").strip() or None,
+            "year": int(m.group(1)) if m else None,
+        }
+        if any(found.values()):
+            log.info("read identity from the embedded MOVIE tag block")
+            log.debug("embedded identity: %s", found)
+            return found
+    return None
 
 
 def check_movie(path, expected_title):

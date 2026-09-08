@@ -140,8 +140,11 @@ class WebUI:
             self.orchestrator.queue.put(title_id)
             return {"ok": True, "action": "overridden and requeued"}
         if action == "discard":
-            self.orchestrator._quarantine(title_id, row["source_path"], "discarded by operator")
-            return {"ok": True, "action": "quarantined"}
+            outcome = self.orchestrator._quarantine(
+                title_id, row["source_path"], "discarded by operator"
+            )
+            log.info("operator discarded title %s: %s", title_id, outcome)
+            return {"ok": True, "action": outcome}
         raise ValueError("action must be one of keep, retry, override, discard")
 
     def start(self):
