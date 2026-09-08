@@ -437,7 +437,7 @@ class Provider:
         return notes
 
 
-YEAR_IN_NAME = re.compile(r"[.\s(\[_-](19\d{2}|20\d{2})[)\].\s_-]")
+YEAR_IN_NAME = re.compile(r"[.\s(\[_-](19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
 JUNK = re.compile(
     r"\b(1080p|720p|2160p|4k|bluray|blu-ray|bdrip|brrip|webrip|web-?dl|hdtv|remux|"
     r"x26[45]|h\.?26[45]|hevc|avc|xvid|divx|aac|ac3|dts(?:-hd)?|truehd|atmos|"
@@ -449,8 +449,9 @@ JUNK = re.compile(
 
 def _clean_movie_name(name):
     year = None
-    m = YEAR_IN_NAME.search(name)
-    if m:
+    matches = list(YEAR_IN_NAME.finditer(name))
+    if matches:
+        m = matches[-1]
         year = int(m.group(1))
         name = name[: m.start()]
     name = name.replace(".", " ").replace("_", " ")

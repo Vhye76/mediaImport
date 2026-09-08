@@ -2,10 +2,12 @@ import logging
 import os
 import re
 
+from . import probe as probemod
+
 log = logging.getLogger("standards")
 
 MOVIE_MIN_DISPLAY_WIDTH = 1920
-MOVIE_MIN_DISPLAY_HEIGHT = 1080
+MOVIE_MIN_DISPLAY_HEIGHT = 800
 MOVIE_MIN_RUNTIME_S = 40 * 60
 TV_MIN_RUNTIME_S = 15 * 60
 
@@ -68,8 +70,7 @@ def _human_runtime(seconds):
 
 
 def runtime_seconds(container):
-    video = container.get("video") or {}
-    return video.get("duration") or container.get("container_duration") or 0
+    return probemod.usable_duration(container.get("video") or {}, container)
 
 
 def screen(container, kind, path=None, crop=None):

@@ -172,6 +172,7 @@ STAGED       copy into the encode job directory
 REMUXED      container conversion if needed, then language strip, then flag repair
 TAGGED       movie MOVIE block, or the three-level TV hierarchy
 READY        the readiness gate           fail -> HELD
+ENCODING     the encoder is running, progress and ETA on /api/status
 ENCODED      route per section 14, or pass through
 VERIFIED     duration, statistics
 PUBLISHED    move to complete/
@@ -201,13 +202,15 @@ BOTH KINDS
   not a sample or extras file
 
 MOVIES
-  display resolution at least 1920x1080, computed width * SAR / height
+  display resolution at least 1920x800, computed width * SAR / height
   runtime at least 40 min
 
 TELEVISION
   SD accepted, since no HD master exists for much of the library
   runtime at least 15 min
 ```
+
+THE HEIGHT FLOOR IS 800, NOT 1080, AND THE WIDTH FLOOR IS WHAT REJECTS SD.  A 2.40:1 scope master is 1920x800 and a 2.35:1 is 1920x818;  neither has bars and neither is 1080 tall.  Measured 2026-09-08:  a correctly cropped Blade Runner 2049 and a Return of the Jedi at 1920x816 were both held as "below the 1920x1080 floor", so the floor as written rewarded the file that wasted a quarter of every frame on black.  The width floor of 1920 is what continues to reject 720p, NTSC and PAL DVD, all of which display far narrower.
 
 The 40 minute movie floor exists because a 10 minute bonus featurette once qualified as a disc's main feature and produced two wrong rips.  The floor is the guard, and section 26 records the ARM setting that was the actual cause.
 
@@ -322,6 +325,8 @@ Resolution goes through Wikidata, then verification:  'wbsearchentities', then '
 Cross-check before writing an ID.  Fetch the TMDB page and confirm the title matches.  Wikidata provider IDs can be flat wrong:  P4983 for one show held the TMDB movie id of an unrelated 1984 Italian comedy.
 
 Searching a bare franchise name returns the franchise entity rather than the film.  Search 'Title (YYYY film)'.
+
+A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR.  'Blade Runner 2049 (2017)' carries two year-shaped numbers and the first one is part of the name.  Take the LAST match, not the first, and do not let the pattern consume its trailing delimiter:  in 'Blade.Runner.2049.2017.1080p' the dot after 2049 is also the dot before 2017, so a consuming pattern finds only one match and last equals first.  Both forms resolve correctly with a lookahead.  Titles that are only a year, 1917 and 2012, are unaffected, because the pattern needs a leading delimiter and there is none at position zero.
 
 ### The movie identity ladder
 
@@ -832,3 +837,5 @@ Not in this repository, and adding them needs a decision rather than a commit:
 - Music.  No standards are defined for it anywhere yet.
 - Host-specific packaging.  No Unraid Community Applications template, no Docker Hub mirror.  The deliverable is the image plus a reference compose file that runs anywhere with Docker and a render node.
 - The workstation scripts.  They live in their own tree and continue to run there unchanged.
+
+ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries 'net.unraid.docker.icon'.  It is Unraid-specific and inert on every other host.  It is there because a container with no icon makes the Unraid Docker page request a placeholder that does not exist on that build, and the page auto-refreshes:  measured 2026-09-08, that filled the 128 MB '/var/log' tmpfs to 100 percent with 66 MB of syslog and 61 MB of nginx errors.  The container wrote none of it.  The icon lives at 'media/mediaImport.png' and is served from the repository, matching what every other container on that host does.  It is a placeholder and is expected to be replaced.

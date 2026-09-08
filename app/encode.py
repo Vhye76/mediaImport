@@ -82,13 +82,17 @@ def is_sd(video):
 
 def select(video, kind, cfg, grain=None, gpu_available=True, override=None):
     decision = _select(video, kind, cfg, grain, gpu_available, override)
-    if decision.is_passthrough:
-        log.info("router gate %s: passthrough, %s", decision.gate, decision.reason)
-    else:
-        log.info("router gate %s: %s, %s", decision.gate, decision.encoder, decision.reason)
-    for note in decision.notes:
-        log.info("router note: %s", note)
+    log.debug(
+        "router gate %s: %s, %s",
+        decision.gate, decision.encoder or "passthrough", decision.reason,
+    )
     return decision
+
+
+def describe(decision):
+    if decision.is_passthrough:
+        return "gate %s: passthrough, %s" % (decision.gate, decision.reason)
+    return "gate %s: %s, %s" % (decision.gate, decision.encoder, decision.reason)
 
 
 def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
@@ -212,7 +216,7 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     if decision.is_passthrough:
         raise ValueError("build_command called on a passthrough decision")
 
-    args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y"]
+    args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1"]
 
     if decision.encoder == AV1_QSV:
         node = getattr(cfg, "render_node", RENDER_NODE)

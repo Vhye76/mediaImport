@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 
 from . import probe as probemod
 
@@ -45,18 +46,43 @@ class Result:
         self.stderr = stderr
 
 
-def run_cancellable(cmd, register=None, unregister=None):
+def run_cancellable(cmd, register=None, unregister=None, on_progress=None):
+    log.debug("running %s", " ".join(str(c) for c in cmd))
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     if register:
         register(proc)
+
+    errors = []
+
+    def drain_stderr():
+        for line in proc.stderr:
+            errors.append(line)
+
+    drainer = threading.Thread(target=drain_stderr, name="stderr-drain", daemon=True)
+    drainer.start()
+
+    fields = {}
     try:
-        out, err = proc.communicate()
+        for line in proc.stdout:
+            key, sep, value = line.strip().partition("=")
+            if not sep:
+                continue
+            fields[key] = value
+            if key == "progress":
+                if on_progress:
+                    try:
+                        on_progress(dict(fields))
+                    except Exception:
+                        log.exception("progress callback failed")
+                fields.clear()
+        proc.wait()
     finally:
+        drainer.join(timeout=10)
         if unregister:
             unregister(proc)
-    return Result(proc.returncode, out, err)
+    return Result(proc.returncode, "", "".join(errors))
 
 
 def chapter_count(path):
@@ -237,13 +263,16 @@ def fix_flags_and_language(path):
     return {"edits": len(args) // 4}
 
 
-def detect_crop(path, video):
+def detect_crop(path, video, container=None):
     depth = int(video.get("bit_depth") or 8)
     limit = probemod.cropdetect_limit(depth)
     height = int(video.get("height") or 0)
-    duration = video.get("duration") or 0
+    duration = probemod.usable_duration(video, container)
     if not duration or not height:
-        log.debug("cropdetect skipped, duration=%s height=%s", duration, height)
+        log.warning(
+            "cropdetect could not run on %s, no usable duration (%s) or height (%s)",
+            os.path.basename(str(path)), duration, height,
+        )
         return None
 
     best = None
@@ -285,10 +314,17 @@ def detect_crop(path, video):
     }
 
 
-def grain_probe(path, video, workdir, threshold=None):
+def grain_probe(path, video, workdir, threshold=None, container=None):
     threshold = GRAIN_THRESHOLD if threshold is None else threshold
-    duration = video.get("duration") or 0
-    if not duration or duration < GRAIN_SAMPLE_SECONDS * 2:
+    duration = probemod.usable_duration(video, container)
+    if not duration:
+        log.warning(
+            "grain probe could not run on %s, no usable duration",
+            os.path.basename(str(path)),
+        )
+        return {"grain": False, "ratio": None, "reason": "no usable duration"}
+    if duration < GRAIN_SAMPLE_SECONDS * 2:
+        log.info("grain probe skipped, clip is %.1fs, shorter than twice the sample", duration)
         return {"grain": False, "ratio": None, "reason": "clip too short to sample"}
 
     offset = int(duration * GRAIN_SAMPLE_POSITION)

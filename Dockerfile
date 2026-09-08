@@ -48,6 +48,7 @@ RUN set -eux; \
 LABEL org.opencontainers.image.title="mediaimport" \
       org.opencontainers.image.description="Automatic media import, tag and encode pipeline" \
       org.opencontainers.image.source="https://github.com/Vhye76/mediaImport" \
+      net.unraid.docker.icon="https://raw.githubusercontent.com/Vhye76/mediaImport/main/media/mediaImport.png" \
       mediaimport.ffmpeg="debian"
 
 WORKDIR /opt/mediaimport

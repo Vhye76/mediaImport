@@ -45,6 +45,7 @@
   button.bad:hover { border-color: var(--bad); color: var(--bad); }
   .empty { color: var(--dim); padding: 16px; font-style: italic; }
   .reason { color: var(--warn); font-size: 12px; }
+  .prog { color: var(--dim); font-size: 12px; }
   .banner { background: #2a1f1f; border-color: #5b2323; color: #fca5a5;
             padding: 10px 16px; font-size: 13px; border-radius: 6px; margin-bottom: 12px; }
 </style>
@@ -64,7 +65,7 @@
     <div class="body"><div class="grid" id="stats"></div></div>
   </section>
   <section>
-    <h2>Held, needs a decision</h2>
+    <h2>Needs a decision</h2>
     <div id="held"></div>
   </section>
   <section>
@@ -103,6 +104,7 @@ async function refresh() {
     ["queue", s.queue_depth],
     ["gpu jobs", s.slots.gpu_active],
     ["cpu jobs", s.slots.cpu_active],
+    ["encoding", stages.ENCODING || 0],
     ["held", stages.HELD || 0],
     ["published", stages.PUBLISHED || 0],
     ["retired", stages.RETIRED || 0],
@@ -126,6 +128,7 @@ async function refresh() {
           </td>
         </tr>`).join("") + `</table>`;
 
+  const prog = s.progress || {};
   const titles = await (await fetch("/api/titles")).json();
   $("titles").innerHTML = titles.length === 0
     ? '<div class="empty">Nothing has been imported yet.</div>'
@@ -134,10 +137,25 @@ async function refresh() {
         <tr>
           <td class="name">${t.source_path.split("/").pop()}</td>
           <td>${t.kind || ""}</td>
-          <td>${t.stage}</td>
+          <td>${t.stage}${stageDetail(t, prog[t.id])}</td>
           <td>${t.encoder || ""}</td>
           <td>${t.grain_ratio === null || t.grain_ratio === undefined ? "" : t.grain_ratio}</td>
         </tr>`).join("") + `</table>`;
+}
+
+function stageDetail(t, p) {
+  if (!p) return "";
+  const bits = [];
+  if (p.percent !== undefined && p.percent !== null) bits.push(p.percent.toFixed(1) + "%");
+  if (p.eta_s !== undefined && p.eta_s !== null) bits.push(fmtEta(p.eta_s) + " left");
+  if (p.speed) bits.push(p.speed + "x");
+  return bits.length ? ` <span class="prog">${bits.join(", ")}</span>` : "";
+}
+
+function fmtEta(s) {
+  if (s < 60) return s + "s";
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h ? h + "h " + m + "m" : m + "m";
 }
 
 async function decide(id, action) {

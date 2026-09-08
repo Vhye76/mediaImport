@@ -104,6 +104,7 @@ class Orchestrator:
         self._seen_sizes = {}
         self._procs = set()
         self._procs_lock = threading.Lock()
+        self._progress = {}
 
     def start(self):
         removed, skipped = self.layout.sweep_encode()
@@ -126,6 +127,31 @@ class Orchestrator:
     def stop(self):
         self.stop_event.set()
         self.terminate_encodes()
+
+    def _progress_handler(self, title_id, duration):
+        def handle(fields):
+            micros = fields.get("out_time_us") or fields.get("out_time_ms")
+            try:
+                seconds = int(micros) / 1000000.0
+            except (TypeError, ValueError):
+                return
+            speed = 0.0
+            try:
+                speed = float((fields.get("speed") or "0").rstrip("xX ").strip())
+            except ValueError:
+                pass
+            row = {
+                "seconds": round(seconds, 1),
+                "duration": round(duration, 1) if duration else None,
+                "fps": fields.get("fps"),
+                "speed": speed or None,
+            }
+            if duration:
+                row["percent"] = round(min(100.0, seconds / duration * 100.0), 1)
+                if speed > 0:
+                    row["eta_s"] = int(max(0.0, duration - seconds) / speed)
+            self._progress[title_id] = row
+        return handle
 
     def _register_proc(self, proc):
         with self._procs_lock:
@@ -187,6 +213,8 @@ class Orchestrator:
         root = self.layout.imports
         if not os.path.isdir(root):
             return
+        for gone in [p for p in self._seen_sizes if not os.path.exists(p)]:
+            del self._seen_sizes[gone]
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             for name in sorted(filenames):
@@ -392,7 +420,14 @@ class Orchestrator:
         if self.cfg.dry_run:
             log.info("DRY RUN would copy %s -> %s", source, work)
         else:
+            copy_started = time.time()
             shutil.copy2(source, work)
+            copied = time.time() - copy_started
+            log.info(
+                "staged %s, %.1f GB in %.0fs (%.0f MB/s)",
+                os.path.basename(source), size / 1e9, copied,
+                (size / 1e6 / copied) if copied > 0 else 0,
+            )
         self.store.advance(
             title_id, state.STAGED, "copied to the encode area", job_id=job_id, work_path=work
         )
@@ -474,7 +509,8 @@ class Orchestrator:
         )
         if not decision.is_passthrough and "film" not in override:
             result = media.grain_probe(
-                work, video, workdir, threshold=self.cfg.grain_threshold
+                work, video, workdir,
+                threshold=self.cfg.grain_threshold, container=container,
             ) if not self.cfg.dry_run else {
                 "grain": False, "ratio": None, "reason": "dry run"
             }
@@ -487,6 +523,9 @@ class Orchestrator:
             log.info("grain probe %s: %s", os.path.basename(work), result["reason"])
 
         self.store.update(title_id, decision=decision.as_dict(), encoder=decision.encoder)
+        log.info("router %s", encode.describe(decision))
+        for note in decision.notes:
+            log.info("router note: %s", note)
 
         if decision.is_passthrough:
             self.store.advance(
@@ -498,7 +537,7 @@ class Orchestrator:
         if override.get("crop"):
             crop = override["crop"]
         elif not self.cfg.dry_run:
-            detected = media.detect_crop(work, video)
+            detected = media.detect_crop(work, video, container=container)
             if detected:
                 crop = detected["filter"]
                 log.info("cropping %s: %d px of bars", os.path.basename(work), detected["bars_px"])
@@ -515,13 +554,21 @@ class Orchestrator:
 
         sem = self.slots.acquire(decision.device)
         started = time.time()
+        duration = probemod.usable_duration(video, container)
+        self.store.advance(
+            title_id, state.ENCODING,
+            "%s on %s" % (decision.encoder, decision.device),
+        )
         try:
             log.info(
                 "encoding %s with %s on %s",
                 os.path.basename(work), decision.encoder, decision.device,
             )
             proc = media.run_cancellable(
-                cmd, register=self._register_proc, unregister=self._unregister_proc
+                cmd,
+                register=self._register_proc,
+                unregister=self._unregister_proc,
+                on_progress=self._progress_handler(title_id, duration),
             )
             if self.stop_event.is_set():
                 raise RetryLater("shutting down, encode cancelled")
@@ -533,6 +580,7 @@ class Orchestrator:
             self.slots.release(decision.device, sem)
 
         elapsed = int(time.time() - started)
+        self._progress.pop(title_id, None)
         tags.refresh_statistics(target)
         media.fix_flags_and_language(target)
         os.remove(work)
@@ -629,6 +677,7 @@ class Orchestrator:
             "uptime_s": int(time.time() - self.started_at),
             "queue_depth": self.queue.qsize(),
             "slots": self.slots.snapshot(),
+            "progress": dict(self._progress),
             "stages": self.store.counts_by_stage(),
             "gpu": self.gpu.as_dict(),
             "encode": {

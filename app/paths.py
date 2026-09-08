@@ -104,15 +104,6 @@ class Layout:
         kw.setdefault("exist_ok", True)
         return os.makedirs(path, **kw)
 
-    def guarded_replace(self, src, dst):
-        self.assert_writable(dst)
-        return os.replace(src, dst)
-
-    def guarded_open(self, path, mode="r", **kw):
-        if any(c in mode for c in "wxa+"):
-            self.assert_writable(path)
-        return open(path, mode, **kw)
-
     def ensure(self):
         for d in self.work_dirs:
             self.guarded_makedirs(d)
@@ -244,10 +235,6 @@ class Layout:
     def quarantine_path(self, src):
         base = os.path.basename(os.path.normpath(src))
         return self.unique_path(self.quarantine, base)
-
-    def held_path(self, src):
-        base = os.path.basename(os.path.normpath(src))
-        return self.unique_path(self.held, base)
 
     def describe(self):
         lines = [

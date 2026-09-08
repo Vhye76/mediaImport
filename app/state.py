@@ -16,6 +16,7 @@ STAGED = "STAGED"
 REMUXED = "REMUXED"
 TAGGED = "TAGGED"
 READY = "READY"
+ENCODING = "ENCODING"
 ENCODED = "ENCODED"
 VERIFIED = "VERIFIED"
 PUBLISHED = "PUBLISHED"
@@ -27,7 +28,7 @@ FAILED = "FAILED"
 
 PIPELINE = (
     DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED, STAGED, REMUXED,
-    TAGGED, READY, ENCODED, VERIFIED, PUBLISHED, RETIRED,
+    TAGGED, READY, ENCODING, ENCODED, VERIFIED, PUBLISHED, RETIRED,
 )
 TERMINAL = (RETIRED, QUARANTINED)
 STOPPED = (HELD, QUARANTINED, FAILED)
@@ -173,6 +174,10 @@ class Store:
 
     def held(self):
         return self.all(stage=HELD)
+
+    def needs_decision(self):
+        rows = self.all(stage=HELD) + self.all(stage=FAILED)
+        return sorted(rows, key=lambda r: r["updated_at"], reverse=True)
 
     def counts_by_stage(self):
         with self._lock:

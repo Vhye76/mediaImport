@@ -58,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/titles":
                 return self._json(200, self.app.store.all())
             if path == "/api/held":
-                return self._json(200, self.app.store.held())
+                return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
                 return self._send(200, self.app.log_tail(), "text/plain; charset=utf-8")
             if path.startswith("/api/titles/"):
@@ -127,8 +127,10 @@ class WebUI:
         row = self.store.get(title_id)
         if row is None:
             raise ValueError("no such title")
-        if row["stage"] != state.HELD:
-            raise ValueError("title is not held, it is at %s" % row["stage"])
+        if row["stage"] not in (state.HELD, state.FAILED):
+            raise ValueError(
+                "title is not awaiting a decision, it is at %s" % row["stage"]
+            )
 
         if action in ("keep", "retry"):
             self.store.advance(title_id, state.DETECTED, "operator asked for a retry")

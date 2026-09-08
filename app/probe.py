@@ -82,6 +82,17 @@ def _ratio(text, default=1.0):
     return num / den
 
 
+def usable_duration(video, container=None):
+    value = _float_or_none((video or {}).get("duration"))
+    if value:
+        return value
+    value = _float_or_none((container or {}).get("container_duration"))
+    if value:
+        log.debug("video stream reports no duration, using the container figure %.3f", value)
+        return value
+    return 0.0
+
+
 def _float_or_none(value):
     try:
         return float(value)

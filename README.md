@@ -42,6 +42,7 @@ app/            the pipeline: one module per concern
 Dockerfile      debian:trixie-slim plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri
 TESTPLAN.md     container validation cases, executed by hand
+media/          the container icon, a placeholder
 ```
 
 ## Mount contract
