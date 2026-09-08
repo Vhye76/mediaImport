@@ -100,7 +100,7 @@ THE WHOLE PER-TITLE WORK AREA LIVES ON THE ENCODE MOUNT, NOT JUST THE ENCODE ITS
 mp4 to mkv or avi to mkv remux     full read + full write
 language strip                     full read + full write
 encode                             full read + full write
-decode verification                full read
+packet count verification          full read of the source and of the output
 statistics and tag writes          header rewrites plus a full re-read on re-add
 ```
 
@@ -230,7 +230,7 @@ Runs after identification and before any encode.  Ordered gates, first clear dif
 ```
 1  HDR or Dolby Vision present    losing it is never an upgrade
 2  display pixel count            w * SAR / h, never stored dimensions
-3  baked-in letterbox             larger real picture area wins
+3  baked-in letterbox             larger real picture area wins, gate 2 defers to it
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
 6  source pedigree                remux > encode > web
@@ -245,6 +245,12 @@ Gates 2 and 3 need both sides to be measurable.  When one side is missing the ga
 THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SIX IT GATES ON.  Anything measured and dropped is a defect rather than an omission.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such, because that is the case where the pipeline saw something and had no rule for it.  This was written after a title won on audio channel count while the incumbent's real disqualifier, a 25 fps PAL speed-up, was invisible to all six gates.
 
 'picture_pixels' had been hardcoded to None since the gate was written, so gate 3 had never fired on any title in the container's history and every comparison emitted the skip note.  Cropdetect now runs at COMPARED on both sides, and only when either side is a letterbox candidate, keeping the cheap-first rule from section 7.
+
+GATE 2 DEFERS TO GATE 3 WHENEVER EITHER SIDE CARRIES BAKED-IN BARS.  Display pixel count counts black bars as picture and gate 3 exists to discount them, so a gate 2 that decides first has answered the letterbox question on the wrong number.  Measured 2026-09-08:  an incoming Blade Runner 2049 at a correctly cropped 1920x800 was quarantined against an incumbent stored 1920x1080 carrying 280 px of bars.  Both hold an identical 1,536,000 px of real picture, and gate 2 decided on a margin that was entirely black.  Cropdetect had already measured those 280 px at COMPARED and the comparison discarded the number.  Gate 2 now records a defer note and gate 3 decides.  On that title the verdict stays a loss and moves to gate 5, bit depth 8 against 10, which is the true disqualifier;  the old path reached the right answer for the wrong reason and would have reached the wrong answer had the incoming file been 10-bit.
+
+THE DEFER CONDITION HAS NO AMBIGUOUS MIDDLE, BY CONSTRUCTION.  'media.CROP_MIN_BARS_PX' and 'standards.LETTERBOX_MAX_BARS_PX' are both 20, so 'letterbox_px' is only ever 0 or 20 and above.
+
+The exposure was never one title.  A 24-file cropdetect sample of the movie library, taken with the bit-depth-scaled limit from section 16, found the 10 to 19 px band empty and three titles at or above 20 px, two of them the same shape as the Blade Runner incumbent:  Suicide Squad at 1920x1080 with 280 px, and Guardians of the Galaxy Vol. 3 at 1920x1016 with 212 px.  A correctly cropped arrival for either was quarantined by the old gate 2.
 
 A PAL SPEED-UP IS DETECTED FROM THE PAIR, NOT FROM ONE FILE.  Equal frame counts within one frame at different frame rates means one side is speed-adjusted and the slower rate is correct.  That works at any resolution.  The single-file check in 'standards' keys on stored height and could not see a 1080p file at 25 fps carrying a 23.976 master's frame count.
 
@@ -359,6 +365,14 @@ A CANDIDATE CARRYING BOTH IDS AND A YEAR SKIPS THE WIKIDATA SEARCH, but it does 
 The rung that produced an identity is recorded in the stage detail, so a wrong match can be traced to its source instead of guessed at.
 
 Measured 2026-09-07:  a fresh ARM rip carries no tags, no segment title and no folder ids, so only rungs 5 and 6 apply to it.  This ladder improves re-imports and library-shaped files;  it does nothing for a disc rip whose name says nothing.
+
+### Finding the incumbent in the library
+
+THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' into every library folder name, so an ID match is exact and survives any drift between a stored folder name and what the current transform emits.  The transformed-name prefix match stays as a fallback, and the route that matched is recorded in the stage detail so a name-only match is visible rather than assumed.
+
+Measured 2026-09-08:  Return of the Jedi resolved to 'Star Wars: Episode VI – Return of the Jedi', which the section 9 transform renders as 'Star Wars Episode VI - Return of the Jedi' because an en dash becomes ' - '.  The library folder is 'Star Wars Episode VI Return of the Jedi (1983) [tmdbid-1892] [imdbid-tt0086190]', with no dash at all, so the prefix match failed and the title was compared against nothing before taking a full encode slot.  The transform was correct and the library entry predates it.  Both sides carried tmdbid 1892 and it was never consulted.
+
+A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  'no incumbent, treated as new' read identically whether the library held nothing or the lookup had failed, which is the shape section 21 warns about when selection rests on a single fallible query.  The COMPARED detail now separates four outcomes:  no library mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
 
 ### Choosing the release year
 
@@ -590,6 +604,8 @@ Letterboxing            metadata first, cropdetect only on real candidates
 
 TRAP:  COMPARE VIDEO STREAM DURATION, NOT CONTAINER DURATION.  After a language strip the container figure can drop by several minutes with nothing lost, because the longest stream was a subtitle track that got removed.
 
+WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the structural tag readiness check.  The table above is the standard;  the full decode scan is deliberately NOT implemented, because it costs a complete read of the output per title and the packet count was judged to carry enough of the signal.  Section 4's I/O budget names the packet count pass rather than a decode pass so the two agree.  Measured 2026-09-08 on the first published title, an 89 minute encode preserved 128,424 video packets exactly, which is what makes an equality check rather than a tolerance the right shape here.
+
 TRAP:  a decode scan does NOT catch dropped audio.  Surviving packets are valid and there is simply a hole in the timeline.  The reference defect, 193 gaps and roughly 150 seconds of missing audio, passed a clean decode.
 
 ### Cropdetect
@@ -692,6 +708,8 @@ Logs go to stdout and to 'config/logs/mediaimport.log', and the tail is served a
 
 Every log line carries the title id where one exists, so a single title's path can be extracted from a run with several jobs in flight.
 
+A POLL THAT FINDS NOTHING NEW IS NOT AN ACTION.  The watcher's 'already claims this path' line fires once per in-flight title per poll and accounted for 223 of 328 lines in a three-title run, while the 108 minute encode that completed inside that same run logged nothing at all.  It is a debug line.  ENCODED and VERIFIED each emit an info line carrying the same outcome text they already write into the stage history, because an encode finishing is the most meaningful event the pipeline has.
+
 CONFIG RESOLUTION IS LOGGED BY 'main', NOT BY 'config'.  'Config' is constructed before logging is set up, so it records where each setting came from and 'main' prints that at debug once handlers exist.  Anything logging from inside 'Config' is discarded.
 
 ## 21.  Scripting rules and traps
@@ -760,9 +778,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.6.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.8.
 
-TAGS ARE BARE NUMERIC.  '0.0.6', not 'v0.0.6'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.8', not 'v0.0.8'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 

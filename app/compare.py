@@ -273,7 +273,17 @@ def compare(incoming, incumbent):
 
     new_px = incoming["display_pixels"]
     old_px = incumbent["display_pixels"]
-    if new_px and old_px:
+    new_bars = incoming.get("letterbox_px") or 0
+    old_bars = incumbent.get("letterbox_px") or 0
+    if new_bars or old_bars:
+        notes.append(
+            "baked-in bars present, incoming %d px and incumbent %d px, "
+            "gate 2 deferred to gate 3" % (new_bars, old_bars)
+        )
+        log.debug(
+            "gate 2 deferred, bars incoming %d px, incumbent %d px", new_bars, old_bars
+        )
+    elif new_px and old_px:
         larger = max(new_px, old_px)
         if abs(new_px - old_px) / float(larger) > PIXEL_TOLERANCE:
             return _decide(

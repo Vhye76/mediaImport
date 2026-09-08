@@ -136,6 +136,7 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 - **T-16  A PAL speed-up holds.**  720x576 at 25 fps.  Expect HELD naming the PAL speed-up.
 - **T-17  Undetermined audio is accepted.**  A file whose only audio is 'und'.  Expect it proceeds past SCREENED.
 - **T-18  SD television is accepted.**  A 720x480 episode.  Expect it proceeds past SCREENED.
+- **T-18a  The crop floor is 20 px.**  One source with bars between 10 and 19 px and one with bars above 20 px.  Expect the first published uncropped and reporting 'letterbox_px' 0, and the second cropped.  A 24-file library sample found the 10 to 19 px band empty, so the first file has to be constructed.
 
 **T-19  The override forces a held title through.**
 
@@ -224,10 +225,16 @@ Each case needs a prepared library file and a prepared incoming file that differ
 - **T-23  Gate 1, losing HDR is a loss.**  Incumbent HDR, incoming SDR.  Expect QUARANTINED, incoming file present under 'complete/.quarantine'.
 - **T-24  Gate 2, higher resolution wins.**  Incoming 2160p against 1080p incumbent.  Expect it proceeds.
 - **T-25  Gate 3, larger picture area wins.**  Incoming without bars against a letterboxed incumbent.  Expect it proceeds.
+- **T-25a  Gate 2 defers when either side carries bars.**  A correctly cropped 1920x800 incoming file against an incumbent stored 1920x1080 with 280 px of bars and a greater bit depth.  Expect QUARANTINED decided at gate 5 on bit depth, the comparison notes carrying the gate 2 defer, and the table showing 'letterbox_px' 0 against 280.  This is the Blade Runner 2049 pair from 2026-09-08.
+- **T-25b  Gate 2 still decides when neither side carries bars.**  A 2160p incoming file against a 1080p incumbent, neither letterboxed.  Expect the verdict at gate 2 and no defer note.  Regression guard on T-25a.
+- **T-25c  An equivalent pair behind bars holds rather than quarantining.**  The T-25a pair with both sides at the same bit depth.  Expect HELD as ambiguous, not QUARANTINED.  Before the defer this pair was discarded on black bars alone.
 - **T-26  Gate 4, more audio channels wins.**  Incoming 5.1 against 2.0.  Expect it proceeds.
 - **T-27  Gate 5, greater bit depth wins.**  Incoming 10-bit against 8-bit.  Expect it proceeds.
 - **T-28  Gate 6, better pedigree breaks a tie.**  Identical but for release naming.  Expect it proceeds and the comparison notes record the weak signal.
 - **T-29  A level pair holds.**  Two files identical on every gate.  Expect HELD, and '/api/titles/<id>' carries a comparison object.
+- **T-29a  The incumbent is found by provider ID when the folder name has drifted.**  A library folder carrying the right '[tmdbid-N]' whose name does not match the current transform, for example an en dash title filed with no dash at all.  Expect the comparison to run and the COMPARED detail to name the ID route.  This is the Return of the Jedi case from 2026-09-08.
+- **T-29b  The name fallback still works and is labelled.**  A library folder whose name matches the transform exactly and whose provider IDs are absent from the folder name.  Expect the comparison to run and the COMPARED detail to name the folder-name route.
+- **T-29c  A genuine miss is distinguishable from a lookup failure.**  A title with no library counterpart.  Expect the COMPARED detail to report the number of folders scanned rather than a bare 'no incumbent' sentence.
 
 **T-30  No library mounted skips the comparison.**
 
@@ -297,6 +304,7 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-60a  The published file carries a targeted tag block.**  Assert structurally on the file in 'complete/', not by grep:  every expected TargetType appears on its own Tag element, and no Simple Name anywhere contains a slash.  Run one movie and one episode.
 - **T-60b  Scraped metadata survives the encode.**  A source carrying an untargeted block of ACTOR, DIRECTOR, GENRE and SYNOPSIS.  Expect every one of those keys present on the published file.
 - **T-60c  Statistics survive the post-encode tag write.**  Record the byte-sum ratio on the published file.  Expect it above the floor and not zero.
+- **T-60d  Video packets are preserved through the encode.**  Expect the VERIFIED stage detail on '/api/titles/<id>' to carry a video packet figure equal to the source count.  Measured 2026-09-08:  an 89 minute encode preserved 128,424 packets exactly, so this is an equality and not a tolerance.  Then truncate an encoder output by hand before verification and expect the title HELD naming the packet mismatch rather than published.
 
 ## 11.  Publishing
 
@@ -340,7 +348,8 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-70d  The dialog renders untrusted text as text.**  A source filename containing '&', '<' and a double quote.  Expect the characters displayed literally and no broken markup.
 - **T-70e  A removed file leaves a record that can be cleared.**  Take a title to CLEANUP, delete its quarantined source by hand, and refresh.  Expect the row marked 'files gone' and a Forget button.  Press it and expect the row to disappear.  Confirm no file was deleted by the container.
 - **T-70f  A re-imported source is processed, not skipped.**  After T-70e, drop the same source back into 'import/' under the same filename.  Expect it detected and processed rather than silently ignored.
-- **T-70g  A source still in flight is not processed twice.**  While a title is at ENCODING, confirm its path in 'import/' is skipped and that the skip is logged with the claiming title's stage.
+- **T-70g  A source still in flight is not processed twice.**  While a title is at ENCODING, confirm '/api/titles' holds no second row for its path and that the original row keeps its stage.  The skip itself is a debug line and is not asserted on.
+- **T-70h  The log records the encode and not the polls.**  Run one title to CLEANUP at the default 'info' level with a second title in flight.  Expect one ENCODED line and one VERIFIED line, each naming the title id, and no 'already claims this path' line at info.  This is the one case that reads the log, and it exists because the defect it guards was the log itself.
 
 ## 13.  Web
 

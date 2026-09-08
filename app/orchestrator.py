@@ -193,14 +193,18 @@ class Orchestrator:
     def requeue_retries(self):
         for row in self.store.due_for_retry(RETRY_MAX_ATTEMPTS):
             log.info(
-                "retrying %s (attempt %d)", row["source_path"], (row["attempts"] or 0) + 1
+                "title %s retrying %s (attempt %d)",
+                row["id"], row["source_path"], (row["attempts"] or 0) + 1,
             )
             self.store.advance(row["id"], state.DETECTED, "retry due")
             self.queue.put(row["id"])
 
     def requeue_resumable(self):
         for row in self.store.resumable():
-            log.info("resuming %s from stage %s", row["source_path"], row["stage"])
+            log.info(
+                "title %s resuming %s from stage %s",
+                row["id"], row["source_path"], row["stage"],
+            )
             self.queue.put(row["id"])
 
     def _watch(self):
@@ -236,19 +240,19 @@ class Orchestrator:
                 if existing:
                     if existing["stage"] in state.TERMINAL:
                         log.info(
-                            "%s reappeared in import after %s, treating it as a new import",
-                            name, existing["stage"],
+                            "title %s %s reappeared in import after %s, treating it as a new import",
+                            existing["id"], name, existing["stage"],
                         )
                         self.store.reset_for_reimport(existing["id"])
                         self.queue.put(existing["id"])
                     else:
-                        log.info(
+                        log.debug(
                             "skipping %s, title %s already claims this path at stage %s",
                             name, existing["id"], existing["stage"],
                         )
                     continue
                 title_id = self.store.upsert_source(path)
-                log.info("detected %s", path)
+                log.info("title %s detected %s", title_id, path)
                 self.queue.put(title_id)
 
     def _stable(self, path):
@@ -321,7 +325,7 @@ class Orchestrator:
                 log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
                 self.store.hold_for_retry(title_id, str(exc), delay)
         except QuarantineError as exc:
-            log.info("quarantined: %s: %s", source, exc)
+            log.debug("quarantine raised on %s: %s", source, exc)
             self._quarantine(title_id, source, str(exc))
 
     #----- Stages, in chain order
@@ -382,16 +386,23 @@ class Orchestrator:
                 title_id, state.COMPARED, "no library mounted, comparison skipped"
             )
             return
-        incumbent_path = self._find_incumbent(identity, kind)
+        incumbent_path, route = self._find_incumbent(identity, kind)
         if incumbent_path is None:
-            self.store.advance(title_id, state.COMPARED, "no incumbent, treated as new")
+            log.info("title %s has no incumbent, treated as new: %s", title_id, route)
+            self.store.advance(
+                title_id, state.COMPARED, "no incumbent, treated as new: %s" % route
+            )
             return
+        log.info(
+            "title %s comparing against incumbent %s, %s",
+            title_id, os.path.basename(incumbent_path), route,
+        )
         try:
             incumbent = probemod.probe(incumbent_path).container
         except probemod.ProbeError as exc:
             self.store.advance(title_id, state.COMPARED, "incumbent unreadable: %s" % exc)
             return
-        crops = self._crop_both(container, incumbent, source, incumbent_path)
+        crops = self._crop_both(title_id, container, incumbent, source, incumbent_path)
         result = compare.compare(
             compare.measure(source, crop=crops[0]),
             compare.measure(incumbent_path, crop=crops[1]),
@@ -401,9 +412,11 @@ class Orchestrator:
             raise QuarantineError("not better than the incumbent: %s" % result.reason)
         if result.verdict == compare.AMBIGUOUS:
             raise HoldError("comparison against the incumbent was inconclusive")
-        self.store.advance(title_id, state.COMPARED, result.reason)
+        self.store.advance(
+            title_id, state.COMPARED, "%s (incumbent %s)" % (result.reason, route)
+        )
 
-    def _crop_both(self, incoming, incumbent, incoming_path, incumbent_path):
+    def _crop_both(self, title_id, incoming, incumbent, incoming_path, incumbent_path):
         new_video = incoming.get("video") or {}
         old_video = incumbent.get("video") or {}
         if not (
@@ -412,7 +425,7 @@ class Orchestrator:
         ):
             log.debug("neither side is a letterbox candidate, gate 3 cropdetect not run")
             return None, None
-        log.info("running cropdetect on both sides for the letterbox gate")
+        log.info("title %s running cropdetect on both sides for the letterbox gate", title_id)
         pairs = []
         for path, video, container in (
             (incoming_path, new_video, incoming),
@@ -434,29 +447,97 @@ class Orchestrator:
     def _find_incumbent(self, identity, kind):
         root = self.layout.libraries.get(kind)
         if not root or not os.path.isdir(root):
-            return None
+            return None, "no %s library mounted" % kind
         if kind == "movie":
-            wanted = titles.to_filename(identity["title"])
-            for name in os.listdir(root):
-                if name.startswith("%s (%s)" % (wanted, identity.get("year"))):
-                    folder = os.path.join(root, name)
-                    for f in sorted(os.listdir(folder)):
-                        if f.lower().endswith(".mkv"):
-                            return os.path.join(folder, f)
-            return None
+            return self._find_movie_incumbent(root, identity)
+        return self._find_tv_incumbent(root, identity)
+
+    @staticmethod
+    def _folder_ids(name):
+        found = {}
+        for key, pattern in (
+            ("tmdb", titles.TMDBID_IN_NAME),
+            ("imdb", titles.IMDBID_IN_NAME),
+            ("tvdb", titles.TVDBID_IN_NAME),
+        ):
+            match = pattern.search(name)
+            if match:
+                found[key] = match.group(1).lower()
+        return found
+
+    @classmethod
+    def _id_match(cls, identity, name, keys):
+        folder_ids = cls._folder_ids(name)
+        for key in keys:
+            want = identity.get(key)
+            have = folder_ids.get(key)
+            if want and have and str(want).lower() == have:
+                return "%sid-%s" % (key, want)
+        return None
+
+    @staticmethod
+    def _first_mkv(folder):
+        for entry in sorted(os.listdir(folder)):
+            if entry.lower().endswith(".mkv"):
+                return os.path.join(folder, entry)
+        return None
+
+    def _find_movie_incumbent(self, root, identity):
+        prefix = "%s (%s)" % (titles.to_filename(identity["title"]), identity.get("year"))
+        by_name = None
+        scanned = 0
+        for name in sorted(os.listdir(root)):
+            folder = os.path.join(root, name)
+            if not os.path.isdir(folder):
+                continue
+            scanned += 1
+            matched = self._id_match(identity, name, ("tmdb", "imdb"))
+            if matched:
+                found = self._first_mkv(folder)
+                if found:
+                    return found, "matched on %s" % matched
+                return None, "folder matched on %s but holds no mkv" % matched
+            if by_name is None and name.startswith(prefix):
+                by_name = folder
+        if by_name is not None:
+            found = self._first_mkv(by_name)
+            if found:
+                return found, "matched on folder name, no provider id match"
+        return None, "scanned %d library folder(s), none matched" % scanned
+
+    def _find_tv_incumbent(self, root, identity):
         show = titles.to_filename(identity.get("show") or "")
         season = identity.get("season")
-        episode = identity.get("episode")
-        for name in os.listdir(root):
-            if not name.startswith(show + " ("):
+        code = titles.episode_code(season, identity.get("episode"))
+        by_name = None
+        scanned = 0
+        for name in sorted(os.listdir(root)):
+            folder = os.path.join(root, name)
+            if not os.path.isdir(folder):
                 continue
-            season_dir = os.path.join(root, name, titles.season_folder(season))
-            if not os.path.isdir(season_dir):
-                return None
-            code = titles.episode_code(season, episode)
-            for f in sorted(os.listdir(season_dir)):
-                if code in f and f.lower().endswith(".mkv"):
-                    return os.path.join(season_dir, f)
+            scanned += 1
+            matched = self._id_match(identity, name, ("tvdb", "tmdb"))
+            if matched:
+                found = self._episode_file(folder, season, code)
+                if found:
+                    return found, "matched on %s" % matched
+                return None, "show matched on %s, %s not in the library" % (matched, code)
+            if by_name is None and name.startswith(show + " ("):
+                by_name = folder
+        if by_name is not None:
+            found = self._episode_file(by_name, season, code)
+            if found:
+                return found, "matched on folder name, no provider id match"
+        return None, "scanned %d library folder(s), none matched" % scanned
+
+    @staticmethod
+    def _episode_file(folder, season, code):
+        season_dir = os.path.join(folder, titles.season_folder(season))
+        if not os.path.isdir(season_dir):
+            return None
+        for entry in sorted(os.listdir(season_dir)):
+            if code in entry and entry.lower().endswith(".mkv"):
+                return os.path.join(season_dir, entry)
         return None
 
     def _stage(self, title_id, source, job_id, container):
@@ -464,7 +545,8 @@ class Orchestrator:
         ok, need = self.layout.has_headroom(size)
         while not ok and not self.stop_event.is_set():
             log.info(
-                "waiting for encode space: need %d bytes, have %d",
+                "title %s waiting for encode space: need %d bytes, have %d",
+                title_id,
                 need,
                 self.layout.encode_free_bytes(),
             )
@@ -474,14 +556,14 @@ class Orchestrator:
         workdir = self.layout.make_job_dir(job_id)
         work = os.path.join(workdir, os.path.basename(source))
         if self.cfg.dry_run:
-            log.info("DRY RUN would copy %s -> %s", source, work)
+            log.info("title %s DRY RUN would copy %s -> %s", title_id, source, work)
         else:
             copy_started = time.time()
             shutil.copy2(source, work)
             copied = time.time() - copy_started
             log.info(
-                "staged %s, %.1f GB in %.0fs (%.0f MB/s)",
-                os.path.basename(source), size / 1e9, copied,
+                "title %s staged %s, %.1f GB in %.0fs (%.0f MB/s)",
+                title_id, os.path.basename(source), size / 1e9, copied,
                 (size / 1e6 / copied) if copied > 0 else 0,
             )
         self.store.advance(
@@ -496,7 +578,7 @@ class Orchestrator:
         if ext.lower() != ".mkv":
             target = base + ".mkv"
             if self.cfg.dry_run:
-                log.info("DRY RUN would remux %s -> %s", current, target)
+                log.info("title %s DRY RUN would remux %s -> %s", title_id, current, target)
             else:
                 info = media.to_matroska(current, target)
                 detail.append(info["method"])
@@ -505,7 +587,7 @@ class Orchestrator:
 
         stripped = os.path.join(os.path.dirname(current), "stripped.mkv")
         if self.cfg.dry_run:
-            log.info("DRY RUN would strip foreign tracks from %s", current)
+            log.info("title %s DRY RUN would strip foreign tracks from %s", title_id, current)
         else:
             info = media.strip_foreign(current, stripped)
             if info["stripped"]:
@@ -537,7 +619,7 @@ class Orchestrator:
 
     def _tag(self, title_id, work, identity, kind):
         if self.cfg.dry_run:
-            log.info("DRY RUN would write %s tags to %s", kind, work)
+            log.info("title %s DRY RUN would write %s tags to %s", title_id, kind, work)
             self.store.advance(title_id, state.TAGGED, "dry run")
             return {}
         carry = tags.carry_forward(tags.read_tags(work))
@@ -579,12 +661,15 @@ class Orchestrator:
                 video, kind, self.cfg, grain=grain,
                 gpu_available=self.gpu.available, override=override,
             )
-            log.info("grain probe %s: %s", os.path.basename(work), result["reason"])
+            log.info(
+                "title %s grain probe %s: %s",
+                title_id, os.path.basename(work), result["reason"],
+            )
 
         self.store.update(title_id, decision=decision.as_dict(), encoder=decision.encoder)
-        log.info("router %s", encode.describe(decision))
+        log.info("title %s router %s", title_id, encode.describe(decision))
         for note in decision.notes:
-            log.info("router note: %s", note)
+            log.info("title %s router note: %s", title_id, note)
 
         if decision.is_passthrough:
             self.store.advance(
@@ -599,7 +684,10 @@ class Orchestrator:
             detected = media.detect_crop(work, video, container=container)
             if detected:
                 crop = detected["filter"]
-                log.info("cropping %s: %d px of bars", os.path.basename(work), detected["bars_px"])
+                log.info(
+                    "title %s cropping %s: %d px of bars",
+                    title_id, os.path.basename(work), detected["bars_px"],
+                )
 
         target = os.path.join(workdir, "encoded.mkv")
         cmd = encode.build_command(
@@ -607,7 +695,7 @@ class Orchestrator:
         )
 
         if self.cfg.dry_run:
-            log.info("DRY RUN would encode with: %s", " ".join(cmd))
+            log.info("title %s DRY RUN would encode with: %s", title_id, " ".join(cmd))
             self.store.advance(title_id, state.ENCODED, "dry run")
             return work
 
@@ -620,8 +708,8 @@ class Orchestrator:
         )
         try:
             log.info(
-                "encoding %s with %s on %s",
-                os.path.basename(work), decision.encoder, decision.device,
+                "title %s encoding %s with %s on %s",
+                title_id, os.path.basename(work), decision.encoder, decision.device,
             )
             proc = media.run_cancellable(
                 cmd,
@@ -645,6 +733,10 @@ class Orchestrator:
         self._apply_tags(target, identity, kind, carry)
         tags.refresh_statistics(target)
         os.remove(work)
+        log.info(
+            "title %s encoded with %s on %s in %d min",
+            title_id, decision.encoder, decision.device, elapsed // 60,
+        )
         self.store.advance(
             title_id,
             state.ENCODED,
@@ -666,6 +758,17 @@ class Orchestrator:
                 % (out_duration - src_duration)
             )
         notes.append("duration %.1f min" % ((out_duration or 0) / 60))
+        packets_in = media.packet_count(source)
+        packets_out = media.packet_count(work)
+        if packets_in and packets_out and packets_in != packets_out:
+            raise HoldError(
+                "video packet count changed, %d in and %d out, streams may be incomplete"
+                % (packets_in, packets_out)
+            )
+        if packets_in and packets_out:
+            notes.append("%d video packets preserved" % packets_out)
+        else:
+            notes.append("packet count unavailable, stream fidelity not checked")
         ratio = tags.byte_sum_ratio(work)
         if ratio <= tags.STATS_RATIO_FLOOR:
             raise HoldError("track statistics missing after encode, byte-sum ratio %.4f" % ratio)
@@ -677,6 +780,7 @@ class Orchestrator:
             raise HoldError("published file failed readiness: %s" % "; ".join(problems))
         notes.append("tag structure verified")
         self.store.update(title_id, output_probe=compare.measure(work))
+        log.info("title %s verified: %s", title_id, "; ".join(notes))
         self.store.advance(title_id, state.VERIFIED, "; ".join(notes))
 
     def _publish(self, title_id, work, identity, kind):
@@ -703,7 +807,7 @@ class Orchestrator:
         if self.cfg.dry_run:
             if os.path.exists(destination):
                 raise HoldError("destination already exists: %s" % destination)
-            log.info("DRY RUN would publish -> %s", destination)
+            log.info("title %s DRY RUN would publish -> %s", title_id, destination)
             self.store.advance(title_id, state.PUBLISHED, "dry run", output_path=destination)
             return
 
@@ -721,13 +825,16 @@ class Orchestrator:
             return
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
-        log.info("retired %s to quarantine", os.path.basename(source))
+        log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
         self.store.advance(title_id, state.CLEANUP, "source retired, work area wiped")
 
     def _quarantine(self, title_id, source, reason):
         if not os.path.exists(source):
-            log.info("source %s no longer exists, removing the title rather than quarantining", source)
+            log.info(
+                "title %s source %s no longer exists, removing the title rather than quarantining",
+                title_id, source,
+            )
             self.store.forget(title_id)
             return "forgotten"
         if self.cfg.dry_run:
@@ -736,7 +843,7 @@ class Orchestrator:
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
         self.store.advance(title_id, state.QUARANTINED, reason, reason=reason)
-        log.info("quarantined %s: %s", os.path.basename(source), reason)
+        log.info("title %s quarantined %s: %s", title_id, os.path.basename(source), reason)
         return "quarantined"
 
     #----- Reporting

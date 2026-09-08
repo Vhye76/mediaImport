@@ -25,7 +25,7 @@ GRAIN_PROBE_PRESET = "ultrafast"
 
 CROP_SAMPLE_POSITIONS = (0.25, 0.45, 0.65)
 CROP_SAMPLE_FRAMES = 40
-CROP_MIN_BARS_PX = 10
+CROP_MIN_BARS_PX = 20
 
 _CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
