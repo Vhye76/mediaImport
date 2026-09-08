@@ -33,6 +33,7 @@ PIPELINE = (
 TERMINAL = (RETIRED, QUARANTINED)
 STOPPED = (HELD, QUARANTINED, FAILED)
 
+#----- Schema
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS titles (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +77,7 @@ CREATE INDEX IF NOT EXISTS history_title ON history(title_id);
 """
 
 
+#----- JSON column helpers
 def _json(value):
     if value is None:
         return None
@@ -91,6 +93,7 @@ def _unjson(value):
         return None
 
 
+#----- The store
 class Store:
     def __init__(self, path):
         self.path = str(path)
@@ -139,6 +142,7 @@ class Store:
         self.record(title_id, DETECTED, "detected in import")
         return title_id
 
+    #----- Queries
     def get(self, title_id):
         with self._lock:
             cur = self._db.execute("SELECT * FROM titles WHERE id = ?", (title_id,))
@@ -184,6 +188,7 @@ class Store:
             cur = self._db.execute("SELECT stage, COUNT(*) n FROM titles GROUP BY stage")
             return {r["stage"]: r["n"] for r in cur.fetchall()}
 
+    #----- Mutation and stage transitions
     def update(self, title_id, **fields):
         log.debug("title %s fields updated: %s", title_id, ", ".join(sorted(fields)))
         if not fields:
@@ -232,6 +237,7 @@ class Store:
             )
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
+    #----- History
     def record(self, title_id, stage, detail=None):
         with self._lock:
             self._db.execute(

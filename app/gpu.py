@@ -35,6 +35,7 @@ class GpuStatus:
         return "<GpuStatus available=%s reason=%r>" % (self.available, self.reason)
 
 
+#----- vainfo
 def _vainfo(render_node, timeout=30):
     log.debug("running %s --display drm --device %s", VAINFO, render_node)
     return subprocess.run(
@@ -54,6 +55,7 @@ def parse_vainfo(text):
     return profiles
 
 
+#----- The probe
 def probe(cfg=None, render_node=None):
     status = _probe(cfg, render_node)
     if status.available:

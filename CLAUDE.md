@@ -40,6 +40,7 @@ app/
   state.py          SQLite store, one row per title, plus stage history
   webui.py          JSON API and dashboard
   static/           the dashboard page, vanilla JS, no framework
+media/              the container icon, a placeholder, excluded from the image
 Dockerfile          debian:trixie-slim plus ffmpeg, mkvtoolnix, Intel media stack
 entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri
 TESTPLAN.md         container validation cases, executed by hand
@@ -747,9 +748,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.1, the first pre-release.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.6.
 
-TAGS ARE BARE NUMERIC.  '0.0.1', not 'v0.0.1'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.6', not 'v0.0.6'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 

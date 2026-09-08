@@ -1,3 +1,4 @@
+#----- Never needed in the image
 .git/
 .github/
 media/

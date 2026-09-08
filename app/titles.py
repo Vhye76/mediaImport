@@ -31,6 +31,7 @@ TVDBID_IN_NAME = re.compile(r"\[tvdbid-(\d+)\]", re.I)
 YEAR_IN_PARENS = re.compile(r"\((19\d{2}|20\d{2})\)")
 
 
+#----- Reading ids back out of a name
 def ids_from_name(name):
     s = str(name)
     tmdb = TMDBID_IN_NAME.search(s)
@@ -57,6 +58,7 @@ def title_before_ids(name):
     return _collapse(s)
 
 
+#----- The filename transform
 def to_filename(title):
     s = str(title)
     s = s.replace(EM_DASH, " - ").replace(EN_DASH, " - ")
@@ -78,6 +80,7 @@ def is_reserved(name):
     return stem in RESERVED
 
 
+#----- Validation
 def validate_component(name):
     problems = []
     s = str(name)
@@ -108,6 +111,7 @@ def normalise_for_match(s):
     return _collapse(s).lower()
 
 
+#----- Naming
 def movie_folder(title, year, tmdb, imdb):
     imdb = str(imdb)
     if not imdb.startswith("tt"):

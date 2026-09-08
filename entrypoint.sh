@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+#----- Identity to drop to
 PUID="${PUID:?PUID must be set}"
 PGID="${PGID:?PGID must be set}"
 APP_USER=mediaimport
@@ -16,6 +17,7 @@ if ! getent passwd "${PUID}" >/dev/null 2>&1; then
 fi
 RUN_USER="$(getent passwd "${PUID}" | cut -d: -f1)"
 
+#----- GPU access
 if [ -n "${RENDER_GID:-}" ]; then
     if ! getent group "${RENDER_GID}" >/dev/null 2>&1; then
         groupadd -g "${RENDER_GID}" render_host
@@ -27,6 +29,7 @@ else
     echo "entrypoint: RENDER_GID is unset, GPU encoding will be unavailable"
 fi
 
+#----- Required mounts
 missing=""
 specs="MEDIA_ROOT:${MEDIA_ROOT:-/media} CERT_DIR:${CERT_DIR:-/certs}"
 if [ -n "${MEDIA_ENCODE:-}" ]; then specs="${specs} MEDIA_ENCODE:${MEDIA_ENCODE}"; fi
@@ -44,4 +47,5 @@ if [ -n "${missing}" ]; then
 fi
 
 echo "entrypoint: running as ${RUN_USER}:${PRIMARY_GROUP} (${PUID}:${PGID})"
+#----- Drop privileges and hand over
 exec gosu "${PUID}:${PGID}" "$@"

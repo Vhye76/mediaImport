@@ -43,6 +43,7 @@ class Verdict:
         return "<Verdict ok=%s problems=%r>" % (self.ok, self.problems)
 
 
+#----- Individual checks
 def looks_like_sample(path):
     name = os.path.basename(str(path))
     return any(p.search(name) for p in SAMPLE_PATTERNS)
@@ -73,6 +74,7 @@ def runtime_seconds(container):
     return probemod.usable_duration(container.get("video") or {}, container)
 
 
+#----- The gate
 def screen(container, kind, path=None, crop=None):
     problems = []
     warnings = []

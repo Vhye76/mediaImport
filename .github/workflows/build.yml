@@ -1,9 +1,11 @@
 name: build
 
+#----- Manual only;  a tag records history and does not trigger a build
 on:
   workflow_dispatch:
 
 jobs:
+#----- Code validation only, no behaviour is exercised here
   validate:
     runs-on: ubuntu-latest
     steps:
@@ -16,6 +18,7 @@ jobs:
       - name: The package imports
         run: python3 -c "import app.main"
 
+#----- Build and publish to GHCR
   image:
     needs: validate
     runs-on: ubuntu-latest

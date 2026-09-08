@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mediaimport</title>
 <style>
+  /*----- Palette */
   :root {
     --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
     --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
@@ -28,6 +29,7 @@
                border-bottom: 1px solid var(--line); font-weight: 600; }
   .body { padding: 12px 16px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  /*----- Layout */
   .stat { background: #171a20; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
   .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
@@ -83,6 +85,7 @@ function pill(el, text, cls) {
 
 function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
 
+//----- Fetch and redraw, every 5 seconds
 async function refresh() {
   let s;
   try { s = await (await fetch("/api/status")).json(); }
@@ -143,6 +146,7 @@ async function refresh() {
         </tr>`).join("") + `</table>`;
 }
 
+//----- Encode progress, only present while an encoder is running
 function stageDetail(t, p) {
   if (!p) return "";
   const bits = [];
@@ -158,6 +162,7 @@ function fmtEta(s) {
   return h ? h + "h " + m + "m" : m + "m";
 }
 
+//----- Operator actions on a held or failed title
 async function decide(id, action) {
   await fetch(`/api/held/${id}/decision`, {
     method: "POST",
@@ -168,6 +173,7 @@ async function decide(id, action) {
 }
 
 refresh();
+//----- Poll
 setInterval(refresh, 5000);
 </script>
 </body>

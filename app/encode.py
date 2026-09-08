@@ -34,6 +34,7 @@ GPU = "gpu"
 DEVICE_BY_ENCODER = {LIBX265: CPU, LIBSVTAV1: CPU, AV1_QSV: GPU}
 
 
+#----- The routing decision
 class Decision:
     def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None):
         self.action = action
@@ -68,6 +69,7 @@ class Decision:
         )
 
 
+#----- Thread allocation
 def _threads(cfg):
     value = getattr(cfg, "encode_threads_per_job", None)
     log.debug("encoder thread figure resolved to %s", value)
@@ -80,6 +82,7 @@ def is_sd(video):
     return int(video.get("display_height") or 0) < SD_DISPLAY_HEIGHT
 
 
+#----- The router
 def select(video, kind, cfg, grain=None, gpu_available=True, override=None):
     decision = _select(video, kind, cfg, grain, gpu_available, override)
     log.debug(
@@ -185,6 +188,7 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
     )
 
 
+#----- Command fragments
 def _needs_sdr_stamp(video):
     return not video.get("hdr") and not video.get("colour_tagged")
 
@@ -212,6 +216,7 @@ def _sdr_ffmpeg_colour_args():
     ]
 
 
+#----- Command builders
 def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     if decision.is_passthrough:
         raise ValueError("build_command called on a passthrough decision")
@@ -246,6 +251,7 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
             "-preset", X265_PRESET,
             "-crf", str(crf if crf is not None else cfg.crf),
             "-pix_fmt", "yuv420p10le",
+            #----- colour travels inside the params string on this path, not as ffmpeg flags.
             "-x265-params", params,
         ]
         if stamp:

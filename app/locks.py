@@ -22,6 +22,7 @@ DEFAULT_WAIT_INTERVAL = 15
 DEFAULT_REPORT_EVERY = 300
 
 
+#----- The single-instance lock
 class InstanceLock:
     def __init__(self, path):
         self.path = str(path)
@@ -94,6 +95,7 @@ class InstanceLock:
         self.release()
 
 
+#----- Holder identity
 def _read_holder(fd):
     try:
         os.lseek(fd, 0, os.SEEK_SET)
@@ -124,6 +126,7 @@ def pid_alive(pid):
     return True
 
 
+#----- Job directory ownership
 def claim_job_dir(job_dir):
     log.debug("claiming job directory %s for pid %d", job_dir, os.getpid())
     with open(os.path.join(job_dir, OWNER_FILE), "w") as fh:

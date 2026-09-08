@@ -15,6 +15,7 @@ VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wm
 JOB_SIDECAR = "encode.job"
 
 
+#----- Per-title overrides
 def read_sidecar(directory):
     path = os.path.join(directory, JOB_SIDECAR)
     values = {}
@@ -42,6 +43,7 @@ def read_sidecar(directory):
     return out
 
 
+#----- Encoder slot accounting
 class Slots:
     def __init__(self, cfg):
         self.gpu = threading.Semaphore(max(cfg.gpu_slots, 0) or 1)
@@ -73,6 +75,7 @@ class Slots:
             return {"gpu_active": self.gpu_active, "cpu_active": self.cpu_active}
 
 
+#----- Stage outcomes
 class HoldError(RuntimeError):
     pass
 
@@ -106,6 +109,7 @@ class Orchestrator:
         self._procs_lock = threading.Lock()
         self._progress = {}
 
+    #----- Lifecycle
     def start(self):
         removed, skipped = self.layout.sweep_encode()
         if removed:
@@ -128,6 +132,7 @@ class Orchestrator:
         self.stop_event.set()
         self.terminate_encodes()
 
+    #----- Encode progress
     def _progress_handler(self, title_id, duration):
         def handle(fields):
             micros = fields.get("out_time_us") or fields.get("out_time_ms")
@@ -184,6 +189,7 @@ class Orchestrator:
                 except OSError:
                     pass
 
+    #----- Requeueing
     def requeue_retries(self):
         for row in self.store.due_for_retry(RETRY_MAX_ATTEMPTS):
             log.info(
@@ -209,6 +215,7 @@ class Orchestrator:
                 log.exception("retry sweep failed")
             self.stop_event.wait(self.cfg.poll_interval)
 
+    #----- Watching the import directory
     def scan(self):
         root = self.layout.imports
         if not os.path.isdir(root):
@@ -240,6 +247,7 @@ class Orchestrator:
         if time.time() - stat.st_mtime < self.cfg.mtime_quiet:
             self._seen_sizes[path] = stat.st_size
             return False
+        #----- stability means matching the size recorded by the previous poll, not merely being quiet.
         previous = self._seen_sizes.get(path)
         self._seen_sizes[path] = stat.st_size
         return previous == stat.st_size
@@ -258,6 +266,7 @@ class Orchestrator:
             finally:
                 self.queue.task_done()
 
+    #----- The chain
     def process(self, title_id):
         row = self.store.get(title_id)
         if row is None:
@@ -298,6 +307,7 @@ class Orchestrator:
             log.info("quarantined: %s: %s", source, exc)
             self._quarantine(title_id, source, str(exc))
 
+    #----- Stages, in chain order
     def _probe(self, title_id, source):
         container = probemod.probe(source).container
         self.store.advance(title_id, state.PROBED, "probed", probe=container)
@@ -671,6 +681,7 @@ class Orchestrator:
         log.info("quarantined %s: %s", os.path.basename(source), reason)
         return "quarantined"
 
+    #----- Reporting
     def status(self):
         return {
             "started_at": self.started_at,

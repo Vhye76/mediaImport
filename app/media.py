@@ -34,6 +34,7 @@ class MediaError(RuntimeError):
     pass
 
 
+#----- Process execution
 def run(cmd, timeout=None):
     log.debug("running %s", " ".join(str(c) for c in cmd))
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -60,6 +61,7 @@ def run_cancellable(cmd, register=None, unregister=None, on_progress=None):
         for line in proc.stderr:
             errors.append(line)
 
+    #----- stderr must be drained or the child blocks once its pipe fills.
     drainer = threading.Thread(target=drain_stderr, name="stderr-drain", daemon=True)
     drainer.start()
 
@@ -85,6 +87,7 @@ def run_cancellable(cmd, register=None, unregister=None, on_progress=None):
     return Result(proc.returncode, "", "".join(errors))
 
 
+#----- Stream counting
 def chapter_count(path):
     data = probemod.ffprobe_json(path, ["-show_chapters"])
     return len(data.get("chapters") or [])
@@ -103,6 +106,7 @@ def packet_count(path, stream="v:0"):
         return 0
 
 
+#----- Container conversion
 def to_matroska(src, dst, source_format=None):
     src = str(src)
     fmt = (source_format or os.path.splitext(src)[1].lstrip(".")).lower()
@@ -119,6 +123,7 @@ def _mp4_to_mkv(src, dst):
         FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", src,
         "-map", "0:v", "-map", "0:a", "-map", "0:s?", "-map_chapters", "0",
         "-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
+    #----- a .part temp name gives ffmpeg no muxer to infer, so it is named explicitly.
         "-f", "matroska", tmp,
     ]
     proc = run(cmd)
@@ -188,6 +193,7 @@ def _unlink(path):
         pass
 
 
+#----- Language policy and track flags
 def strip_foreign(src, dst):
     rows, data = probemod.track_selectors(src)
     keep_audio = []
@@ -263,6 +269,7 @@ def fix_flags_and_language(path):
     return {"edits": len(args) // 4}
 
 
+#----- Crop detection
 def detect_crop(path, video, container=None):
     depth = int(video.get("bit_depth") or 8)
     limit = probemod.cropdetect_limit(depth)
@@ -314,6 +321,7 @@ def detect_crop(path, video, container=None):
     }
 
 
+#----- Grain measurement
 def grain_probe(path, video, workdir, threshold=None, container=None):
     threshold = GRAIN_THRESHOLD if threshold is None else threshold
     duration = probemod.usable_duration(video, container)

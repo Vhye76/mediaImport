@@ -5,9 +5,11 @@ class ConfigError(RuntimeError):
     pass
 
 
+#----- Config is built before logging exists, so sources are recorded here and printed by main.
 _SOURCES = {}
 
 
+#----- Environment readers
 def _source(name, from_env):
     _SOURCES[name] = "environment" if from_env else "default"
 
@@ -57,6 +59,7 @@ VALID_CODECS = ("hevc", "av1")
 CPU_MAX_PATH = "/sys/fs/cgroup/cpu.max"
 
 
+#----- cgroup CPU quota
 def parse_cpu_max(text):
     if not text:
         return None
@@ -80,6 +83,7 @@ def detect_cpus(path=CPU_MAX_PATH):
         return None
 
 
+#----- The configuration surface
 class Config:
     def __init__(self, env=None):
         if env is not None:
@@ -193,6 +197,7 @@ class Config:
             "cgroup cpu.max" if detected_from_cgroup else "os.cpu_count"
         ) if autodetected else "environment"
 
+    #----- Derived values
     @property
     def tls_cert(self):
         return os.path.join(self.cert_dir, self.tls_cert_file)
@@ -213,6 +218,7 @@ class Config:
     def libraries_mounted(self):
         return bool(self.library_movies or self.library_tv)
 
+    #----- Reporting
     def as_dict(self):
         return {
             "MEDIA_ROOT": self.media_root,

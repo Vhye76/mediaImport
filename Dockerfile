@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     LIBVA_DRIVER_NAME=iHD
 
+#----- Base image and packages
 RUN set -eux; \
     sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' \
         /etc/apt/sources.list.d/debian.sources; \
@@ -29,6 +30,7 @@ RUN set -eux; \
     ; \
     rm -rf /var/lib/apt/lists/*
 
+#----- Build gate:  the image must not ship claiming encoders it lacks
 RUN set -eux; \
     missing=""; \
     for enc in libx265 libsvtav1 av1_qsv; do \
@@ -45,17 +47,20 @@ RUN set -eux; \
     fi; \
     ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|av1_vaapi"
 
+#----- Image metadata
 LABEL org.opencontainers.image.title="mediaimport" \
       org.opencontainers.image.description="Automatic media import, tag and encode pipeline" \
       org.opencontainers.image.source="https://github.com/Vhye76/mediaImport" \
       net.unraid.docker.icon="https://raw.githubusercontent.com/Vhye76/mediaImport/main/media/mediaImport.png" \
       mediaimport.ffmpeg="debian"
 
+#----- Application
 WORKDIR /opt/mediaimport
 COPY app/ ./app/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+#----- Binding 443 as a non-root process needs the capability on the resolved binary
 RUN set -eux; \
     target="$(readlink -f /usr/bin/python3)"; \
     setcap cap_net_bind_service=+ep "${target}"; \
@@ -63,11 +68,13 @@ RUN set -eux; \
 
 EXPOSE 443
 
+#----- Liveness, not identity:  a loopback probe cannot verify a hostname certificate
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
     CMD python3 -c "import ssl,urllib.request,os; \
         ctx=ssl._create_unverified_context(); \
         urllib.request.urlopen('https://127.0.0.1:%s/api/status' % os.environ.get('WEB_PORT','443'), timeout=5, context=ctx)" \
         || exit 1
 
+#----- Entry
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["python3", "-m", "app.main"]

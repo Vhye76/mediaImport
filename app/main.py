@@ -24,6 +24,7 @@ LEVELS = {
 }
 
 
+#----- Logging
 def setup_logging(level, log_path=None):
     handlers = [logging.StreamHandler(sys.stdout)]
     if log_path:
@@ -41,6 +42,7 @@ def setup_logging(level, log_path=None):
     )
 
 
+#----- Startup
 def main():
     try:
         cfg = Config()

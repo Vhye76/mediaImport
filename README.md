@@ -214,9 +214,9 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.0.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent.
+Current version 0.0.6, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
 
-'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, '0.0.1', with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
+'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 
 ## Licence
 

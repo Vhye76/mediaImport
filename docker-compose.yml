@@ -5,6 +5,7 @@ services:
     build: .
     restart: unless-stopped
 
+    #----- Container paths, not host paths
     environment:
       PUID: 1000
       PGID: 1000
@@ -36,6 +37,7 @@ services:
       MTIME_QUIET: 120
       LOG_LEVEL: info
 
+    #----- Host paths come from .env
     volumes:
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env}:/media
       - ${MEDIA_ENCODE:?set MEDIA_ENCODE in .env}:/media/encode
@@ -44,12 +46,14 @@ services:
       - ${MOVIES_PATH:?set MOVIES_PATH in .env}:/media/library/movies:ro
       - ${TV_PATH:?set TV_PATH in .env}:/media/library/tv:ro
 
+    #----- GPU passthrough
     devices:
       - /dev/dri:/dev/dri
 
     ports:
       - "443:443"
 
+    #----- Kernel cgroup limits;  ENCODE_THREADS derives from the CPU quota
     cpus: ${CONTAINER_CPUS:-8}
     mem_limit: ${CONTAINER_MEM:-16g}
 

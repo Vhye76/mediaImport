@@ -16,6 +16,7 @@ class LayoutError(RuntimeError):
     pass
 
 
+#----- Path helpers
 def _norm(p):
     return os.path.normpath(os.path.realpath(os.path.abspath(os.path.expanduser(str(p)))))
 
@@ -26,6 +27,7 @@ def _under(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
+#----- The mount contract
 class Layout:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -76,6 +78,7 @@ class Layout:
     def logs(self):
         return os.path.join(self.config, "logs")
 
+    #----- Write guards
     def is_read_only(self, path):
         for root in self.read_only_roots:
             if _under(path, root):
@@ -115,6 +118,7 @@ class Layout:
                     "LIBRARY_%s points at %s which is not a directory" % (kind.upper(), root)
                 )
 
+    #----- The encode area
     def encode_is_separate(self):
         try:
             return os.stat(self.encode).st_dev != os.stat(self.completed).st_dev
@@ -171,6 +175,7 @@ class Layout:
             removed.append(name)
         return removed, skipped
 
+    #----- Reserving, moving and publishing
     def reserve(self, destination):
         self.assert_writable(destination)
         self.guarded_makedirs(os.path.dirname(destination))
@@ -188,6 +193,7 @@ class Layout:
         self.guarded_makedirs(os.path.dirname(destination))
         try:
             os.replace(source, destination)
+        #----- rename fails across mount points even when both sides are one device.
         except OSError as exc:
             if exc.errno != errno.EXDEV:
                 self._discard_reservation(destination)
@@ -236,6 +242,7 @@ class Layout:
         base = os.path.basename(os.path.normpath(src))
         return self.unique_path(self.quarantine, base)
 
+    #----- Reporting
     def describe(self):
         lines = [
             "import       %s" % self.imports,

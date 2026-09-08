@@ -34,6 +34,7 @@ WORD_NUMBERS = {
 MOVIE_YEAR = re.compile(r"(?:^|[^0-9])(19\d{2}|20\d{2})(?:[^0-9]|$)")
 
 
+#----- Parsing source names
 def classify(path):
     name = os.path.basename(str(path))
     parent = os.path.basename(os.path.dirname(str(path)))
@@ -95,6 +96,7 @@ def title_from_filename(name):
     return stem
 
 
+#----- Matching against the provider catalogue
 def _index(catalogue):
     exact = {}
     base = {}
@@ -110,6 +112,7 @@ def _index(catalogue):
     return exact, base, keys
 
 
+#----- ordering resolves an unmarked title to the first episode of a marked pair.
 def _order(entry):
     return (entry["season"], entry["episode"])
 
@@ -148,6 +151,7 @@ def _match_episode(name, catalogue, cutoff=FUZZY_CUTOFF):
     return None, "none", 0.0
 
 
+#----- Assignment and ranges
 def assign(files, catalogue):
     results = []
     claimed = set()

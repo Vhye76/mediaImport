@@ -22,6 +22,7 @@ class ProbeError(RuntimeError):
     pass
 
 
+#----- Tool invocation
 def _run(cmd, timeout=600):
     log.debug("running %s", " ".join(str(c) for c in cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -53,6 +54,7 @@ def mkvmerge_json(path, timeout=600):
         raise ProbeError("mkvmerge returned unparseable JSON for %s: %s" % (path, exc))
 
 
+#----- Pixel format and crop geometry
 def bit_depth(pix_fmt):
     pix_fmt = (pix_fmt or "").lower()
     for suffix, depth in DEPTH_BY_PIX_FMT_SUFFIX:
@@ -62,6 +64,7 @@ def bit_depth(pix_fmt):
 
 
 def cropdetect_limit(depth):
+    #----- cropdetect reads limit in the source's native bit depth, not normalised to 8-bit.
     limit = 24 * (2 ** (int(depth) - 8))
     log.debug("cropdetect limit %d for %d-bit source", limit, int(depth))
     return limit
@@ -82,6 +85,7 @@ def _ratio(text, default=1.0):
     return num / den
 
 
+#----- Duration
 def usable_duration(video, container=None):
     value = _float_or_none((video or {}).get("duration"))
     if value:
@@ -106,6 +110,7 @@ def _is_cover_art(stream):
     return bool((stream.get("disposition") or {}).get("attached_pic"))
 
 
+#----- The single probe pass
 class Probe:
     def __init__(self, path, data, container):
         self.path = str(path)
@@ -199,6 +204,7 @@ def _size_on_disk(path):
         return 0
 
 
+#----- Per-stream summaries
 def _video_summary(s):
     width = int(s.get("width") or 0)
     height = int(s.get("height") or 0)
@@ -308,6 +314,7 @@ def _stream_summary(s):
     }
 
 
+#----- Direct stream queries
 def video_duration(path):
     data = ffprobe_json(path, ["-select_streams", "v:0", "-show_entries", "stream=duration"])
     streams = data.get("streams") or []

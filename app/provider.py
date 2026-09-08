@@ -48,6 +48,7 @@ class RateLimited(ProviderError):
     pass
 
 
+#----- The HTTP client, throttled and cached
 class Client:
     def __init__(self, cache_dir, throttle=THROTTLE_SECONDS):
         self.cache_dir = str(cache_dir)
@@ -127,6 +128,7 @@ class Client:
             return response.geturl()
 
 
+#----- Wikidata claim readers
 def _claims(entity, prop):
     values = []
     for claim in (entity.get("claims") or {}).get(prop, []):
@@ -182,6 +184,7 @@ def _year(value):
     return int(m.group(1)) if m else None
 
 
+#----- Resolution
 class Provider:
     def __init__(self, client, import_root=None):
         self.client = client
@@ -227,6 +230,7 @@ class Provider:
         haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
         return needle in haystack
 
+    #----- The movie identity ladder
     def movie_candidates(self, source, container):
         stem = os.path.splitext(os.path.basename(source))[0]
         parent = os.path.basename(os.path.dirname(source))
@@ -303,6 +307,7 @@ class Provider:
             resolved["identified_from"] = rung
         return resolved
 
+    #----- Wikidata search paths
     def resolve_movie(self, title, year=None):
         term = "%s (%s film)" % (title, year) if year else "%s (film)" % title
         for candidate in self.search_entities(term) or self.search_entities(title):
@@ -343,6 +348,7 @@ class Provider:
                 }
         return None
 
+    #----- Television catalogue
     def series_slug(self, tvdb_id):
         final = self.client.final_url(TVDB_DEREFERRER % tvdb_id)
         m = re.search(r"/series/([^/?#]+)", final)
@@ -437,6 +443,7 @@ class Provider:
         return notes
 
 
+#----- the trailing delimiter is a lookahead so two adjacent years both match.
 YEAR_IN_NAME = re.compile(r"[.\s(\[_-](19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
 JUNK = re.compile(
     r"\b(1080p|720p|2160p|4k|bluray|blu-ray|bdrip|brrip|webrip|web-?dl|hdtv|remux|"
@@ -447,6 +454,7 @@ JUNK = re.compile(
 )
 
 
+#----- Name cleaning
 def _clean_movie_name(name):
     year = None
     matches = list(YEAR_IN_NAME.finditer(name))

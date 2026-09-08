@@ -38,6 +38,7 @@ def _run(cmd, timeout=3600):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+#----- Reading
 def read_tags(path):
     proc = _run([MKVEXTRACT, str(path), "tags", "-"])
     if proc.returncode != 0:
@@ -54,6 +55,7 @@ def read_tags(path):
         raise TagError("tag XML did not parse: %s" % exc)
 
 
+#----- Tag structure
 def _target_type(tag):
     targets = tag.find("Targets")
     if targets is None:
@@ -115,6 +117,7 @@ def carry_forward(root):
     return carry
 
 
+#----- XML construction
 def _simple_xml(name, value):
     return "    <Simple><Name>%s</Name><String>%s</String></Simple>" % (
         escape(str(name)),
@@ -155,11 +158,13 @@ def build_tv_xml(show, tvdb, tmdb, season, episode_title, episode_number, carry=
     return '<?xml version="1.0"?>\n<Tags>\n%s\n</Tags>\n' % "\n".join(blocks)
 
 
+#----- Writing
 def write_tags(path, xml, segment_title=None, add_stats=True):
     handle, xml_path = tempfile.mkstemp(suffix=".xml", prefix="mediaimport-tags-")
     try:
         with os.fdopen(handle, "w") as fh:
             fh.write(xml)
+        #----- global: replaces untargeted tags only;  all: would take per-track statistics with it.
         args = [MKVPROPEDIT, str(path), "--tags", "global:%s" % xml_path]
         if segment_title is not None:
             args += ["--edit", "info", "--set", "title=%s" % segment_title]
@@ -186,6 +191,7 @@ def write_tags(path, xml, segment_title=None, add_stats=True):
     return None
 
 
+#----- Track statistics
 def add_track_statistics(path):
     proc = _run([MKVPROPEDIT, str(path), "--add-track-statistics-tags"])
     log.debug("add-track-statistics-tags exit %d", proc.returncode)
@@ -227,6 +233,7 @@ def refresh_statistics(path):
     return ratio
 
 
+#----- Identity from tags
 def movie_identity(path):
     try:
         root = read_tags(path)
@@ -253,6 +260,7 @@ def movie_identity(path):
     return None
 
 
+#----- The readiness gate
 def check_movie(path, expected_title):
     problems = []
     root = read_tags(path)

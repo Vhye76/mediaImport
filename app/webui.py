@@ -17,6 +17,7 @@ class TLSError(RuntimeError):
     pass
 
 
+#----- TLS
 def build_ssl_context(cfg):
     try:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -26,6 +27,7 @@ def build_ssl_context(cfg):
     return context
 
 
+#----- Request handling
 class Handler(BaseHTTPRequestHandler):
     server_version = "mediaimport"
 
@@ -105,6 +107,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, fh.read(), content_type)
 
 
+#----- The server
 class WebUI:
     def __init__(self, cfg, orchestrator, store, log_path=None):
         self.cfg = cfg
@@ -123,6 +126,7 @@ class WebUI:
         with open(self.log_path, errors="replace") as fh:
             return "".join(fh.readlines()[-lines:])
 
+    #----- Operator decisions
     def decide(self, title_id, action):
         row = self.store.get(title_id)
         if row is None:
