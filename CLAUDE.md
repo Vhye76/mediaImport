@@ -85,7 +85,7 @@ encode/       the entire per-title work area, one directory per running job
 complete/     TERMINAL, collected by hand
 complete/.quarantine/   retired sources and rejected incoming files
 hold/         needs a decision
-config/       state.db, the instance lock, provider cache, logs
+config/       state.db, the instance lock, provider cache, cached posters, logs
 ```
 
 QUARANTINE LIVES UNDER 'complete/', not on its own mount.  It is a dotted directory so it sits beside finished work without being mistaken for it.  Nothing in the container ever scans 'complete/';  the orchestrator only joins paths to write into it, so a dotted sibling costs nothing.
@@ -406,6 +406,20 @@ THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-
 Measured 2026-09-08:  Return of the Jedi resolved to 'Star Wars: Episode VI – Return of the Jedi', which the section 9 transform renders as 'Star Wars Episode VI - Return of the Jedi' because an en dash becomes ' - '.  The library folder is 'Star Wars Episode VI Return of the Jedi (1983) [tmdbid-1892] [imdbid-tt0086190]', with no dash at all, so the prefix match failed and the title was compared against nothing before taking a full encode slot.  The transform was correct and the library entry predates it.  Both sides carried tmdbid 1892 and it was never consulted.
 
 A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  'no incumbent, treated as new' read identically whether the library held nothing or the lookup had failed, which is the shape section 21 warns about when selection rests on a single fallible query.  The COMPARED detail now separates four outcomes:  no library mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
+
+### Cover art
+
+THE POSTER COMES OFF THE PAGE 'verify_tmdb' ALREADY FETCHES.  Every identification requests 'https://www.themoviedb.org/movie/<id>' to confirm the title, and that page carries the poster in its 'og:image' meta tag.  'provider.tmdb_poster' re-requests the same URL, which is a cache hit, and reads the first 'og:image' out of the body.  The SECOND one is the landscape backdrop, not the poster.
+
+NO TMDB API KEY, DELIBERATELY.  Jellyfin fetches its artwork through the API with an embedded key.  Doing the same here would add an environment variable, a secret to manage and a row in section 5's table, to reach an image that is already present in a response the pipeline holds.  The library itself offers nothing to reuse:  checked 2026-09-08, every movie folder contains the .mkv alone, because Jellyfin keeps artwork in its own metadata cache rather than beside the media.
+
+TWO TRAPS IN SERVING IT, BOTH IN 'webui' NOW.
+
+'ProviderClient.fetch' CANNOT CARRY IMAGE BYTES.  It ends in 'response.read().decode("utf-8", "replace")', which destroys a JPEG.  Posters use 'webui.fetch_poster_bytes', which is a separate binary path.
+
+THE POSTER FETCH MUST NOT SHARE THE PROVIDER THROTTLE.  'fetch' calls '_wait' against one shared timestamp, spacing every request about 3 seconds apart.  Routing twenty uncached posters through it would serialise a dashboard load into a minute of blocking and would queue image requests ahead of identification.  Posters come from an image CDN, not from the Wikidata and TMDB hosts that spacing exists to be polite to.
+
+Posters are cached under 'config/cache/posters' keyed by a hash of the URL, and served from '/api/poster/<title_id>' with a long cache header.  The browser never contacts TMDB, so section 3's no-CDN rule holds and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch failure serves 404 and the UI falls back to a text tile;  artwork is never allowed to be a failure the pipeline notices.
 
 ### Choosing the release year
 
@@ -813,9 +827,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.9.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.10.
 
-TAGS ARE BARE NUMERIC.  '0.0.9', not 'v0.0.9'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.10', not 'v0.0.10'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 

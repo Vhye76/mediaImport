@@ -1,16 +1,42 @@
+import hashlib
 import json
 import logging
 import os
 import ssl
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from . import state
+from . import provider as providermod, state
 
 log = logging.getLogger("webui")
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+POSTER_TIMEOUT = 20
+POSTER_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+POSTER_CACHE_CONTROL = "public, max-age=604800, immutable"
+
+
+def fetch_poster_bytes(url):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": providermod.USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=POSTER_TIMEOUT) as response:
+            if response.getcode() != 200:
+                return None
+            return response.read()
+    except (urllib.error.URLError, OSError) as exc:
+        log.info("poster fetch failed for %s: %s", url, exc)
+        return None
 
 
 class TLSError(RuntimeError):
@@ -38,12 +64,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.debug("%s %s", self.address_string(), fmt % args)
 
-    def _send(self, status, body, content_type="application/json"):
+    def _send(self, status, body, content_type="application/json", cache="no-store"):
         payload = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -63,6 +89,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
                 return self._send(200, self.app.log_tail(), "text/plain; charset=utf-8")
+            if path.startswith("/api/poster/"):
+                found = self.app.poster(int(path.rsplit("/", 1)[1]))
+                if found is None:
+                    return self._json(404, {"error": "no poster"})
+                data, content_type = found
+                return self._send(200, data, content_type, POSTER_CACHE_CONTROL)
             if path.startswith("/api/titles/"):
                 title_id = int(path.rsplit("/", 1)[1])
                 row = self.app.store.get(title_id)
@@ -142,6 +174,36 @@ class WebUI:
             row["output_present"] or row["source_present"] or row["quarantine_present"]
         )
         return row
+
+    def poster(self, title_id):
+        row = self.store.get(title_id)
+        url = (row or {}).get("poster_url")
+        if not url:
+            return None
+        extension = os.path.splitext(urlparse(url).path)[1].lower()
+        if extension not in POSTER_TYPES:
+            extension = ".jpg"
+        directory = os.path.join(self.cfg.media_config, "cache", "posters")
+        path = os.path.join(
+            directory, hashlib.sha256(url.encode()).hexdigest() + extension
+        )
+        if os.path.isfile(path):
+            try:
+                with open(path, "rb") as fh:
+                    return fh.read(), POSTER_TYPES[extension]
+            except OSError:
+                pass
+        data = fetch_poster_bytes(url)
+        if not data:
+            return None
+        try:
+            os.makedirs(directory, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(data)
+            log.debug("cached poster for title %s at %s", title_id, path)
+        except OSError as exc:
+            log.debug("could not cache poster for title %s: %s", title_id, exc)
+        return data, POSTER_TYPES[extension]
 
     def decide(self, title_id, action):
         row = self.store.get(title_id)

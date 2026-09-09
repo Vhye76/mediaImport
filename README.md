@@ -199,7 +199,11 @@ GET  /api/logs                    log tail
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-Where a title was compared against a library incumbent, the dashboard shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, every row whose gate cast a vote is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
+The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters for quarantined files and failed jobs in the lower right.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
+
+Clicking any tile opens its detail:  stage, provider ids, the reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard.  The two counters are clickable and list what is in them, so a rejected title stays inspectable.
+
+Where a title was compared against a library incumbent, the detail shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, every row whose gate cast a vote is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
 
 ## Build and validate
 
@@ -247,7 +251,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.0.9, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
+Current version 0.0.10, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

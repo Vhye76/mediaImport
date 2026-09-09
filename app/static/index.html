@@ -12,53 +12,105 @@
     --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  header { padding: 16px 24px; border-bottom: 1px solid var(--line);
-           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; flex: 0 0 auto; }
   h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px;
           border: 1px solid var(--line); color: var(--dim); }
   .pill.ok { color: var(--ok); border-color: #235b3a; }
   .pill.bad { color: var(--bad); border-color: #5b2323; }
   .pill.warn { color: var(--warn); border-color: #5b4a23; }
-  main { padding: 24px; display: grid; gap: 24px; max-width: 1200px; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
-               color: var(--dim); margin: 0; padding: 12px 16px;
-               border-bottom: 1px solid var(--line); font-weight: 600; }
-  .body { padding: 12px 16px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
-  /*----- Layout */
-  .stat { background: #171a20; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
-  .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-  .stat .v { font-size: 20px; font-weight: 600; margin-top: 2px; }
+
+  /*----- The flow */
+  main { flex: 1 1 auto; min-height: 0; padding: 20px 24px 8px;
+         display: grid; gap: 0 14px;
+         grid-template-columns: 300px 54px minmax(0,1fr) 54px minmax(0,1fr);
+         grid-template-rows: minmax(0,1fr) minmax(0,1fr); }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         display: flex; flex-direction: column; min-height: 0; margin-bottom: 14px; }
+  .box h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--dim); margin: 0; padding: 11px 14px; font-weight: 600;
+            border-bottom: 1px solid var(--line);
+            display: flex; justify-content: space-between; align-items: baseline; }
+  .box h2 .n { font-size: 18px; color: var(--ink); font-weight: 600; letter-spacing: 0; }
+  .box .fill { flex: 1 1 auto; overflow-y: auto; padding: 12px 14px; min-height: 0; }
+
+  #b-queue  { grid-column: 1; grid-row: 1 / span 2; }
+  #a-enc    { grid-column: 2; grid-row: 1; }
+  #b-enc    { grid-column: 3; grid-row: 1; }
+  #a-held   { grid-column: 2; grid-row: 2; }
+  #b-held   { grid-column: 3; grid-row: 2; }
+  #a-ready  { grid-column: 4; grid-row: 1; }
+  #b-ready  { grid-column: 5; grid-row: 1; }
+  #corner   { grid-column: 5; grid-row: 2; display: flex; flex-direction: column;
+              align-items: flex-end; justify-content: flex-end; gap: 6px;
+              padding: 0 4px 18px 0; }
+
+  .arrow { display: flex; flex-direction: column; align-items: center;
+           justify-content: center; gap: 4px; color: var(--line);
+           font-size: 26px; line-height: 1; margin-bottom: 14px; user-select: none; }
+  .arrow .back { font-size: 10px; color: var(--dim); opacity: .75;
+                 text-align: center; letter-spacing: .02em; line-height: 1.25; }
+
+  /*----- Tiles */
+  .tiles { display: flex; flex-wrap: wrap; gap: 12px; }
+  #b-queue .tiles { gap: 10px; }
+  .tile { display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+          border: 1px solid transparent; border-radius: 6px; padding: 6px;
+          background: #171a20; }
+  .tile:hover { border-color: var(--accent); }
+  #b-queue .tile { width: calc(50% - 5px); flex-direction: column; gap: 6px; }
+  .art { width: 62px; height: 93px; flex: 0 0 auto; border-radius: 4px;
+         background: #22262f; border: 1px solid var(--line);
+         overflow: hidden; position: relative; }
+  #b-queue .art { width: 100%; height: auto; aspect-ratio: 2 / 3; }
+  .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .art .ph { position: absolute; inset: 0; display: flex; align-items: center;
+             justify-content: center; font-size: 10px; color: var(--dim);
+             text-align: center; padding: 4px; word-break: break-word; }
+  .tt { min-width: 0; flex: 1 1 auto; }
+  .tt .n { font-size: 13px; font-weight: 600; line-height: 1.3;
+           overflow-wrap: anywhere; }
+  #b-queue .tt .n { font-size: 12px; }
+  .tt .s { font-size: 11px; color: var(--dim); margin-top: 2px; overflow-wrap: anywhere; }
+  .tt .s.warn { color: var(--warn); }
+  .bar { height: 5px; background: #22262f; border-radius: 99px;
+         overflow: hidden; margin-top: 6px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .empty { color: var(--dim); font-style: italic; font-size: 12px; }
+
+  /*----- Corner counters */
+  .counter { font-size: 13px; color: var(--dim); cursor: pointer;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+             padding: 3px 8px; border-radius: 5px; border: 1px solid transparent;
+             white-space: nowrap; }
+  .counter:hover { border-color: var(--accent); color: var(--accent); }
+  .counter b { color: var(--ink); font-weight: 600; margin-left: 6px; }
+
+  /*----- Dialogs */
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+           border-radius: 8px; padding: 0; max-width: 1100px; width: 92vw; }
+  dialog::backdrop { background: rgba(0,0,0,.65); }
+  dialog h3 { margin: 0; padding: 12px 16px; font-size: 13px; text-transform: uppercase;
+              letter-spacing: .08em; color: var(--dim); border-bottom: 1px solid var(--line); }
+  .dlg-body { max-height: 66vh; overflow: auto; }
+  .dlg-foot { padding: 10px 16px; border-top: 1px solid var(--line);
+              display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .dlg-foot .acts { display: flex; gap: 8px; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 8px 16px; border-bottom: 1px solid var(--line);
            font-size: 13px; vertical-align: top; }
   th { color: var(--dim); font-weight: 600; font-size: 11px;
        text-transform: uppercase; letter-spacing: .06em; }
   tr:last-child td { border-bottom: none; }
-  td.name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-            word-break: break-all; }
-  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
-           border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
-  button:hover { border-color: var(--accent); color: var(--accent); }
-  button.bad:hover { border-color: var(--bad); color: var(--bad); }
-  .empty { color: var(--dim); padding: 16px; font-style: italic; }
-  .reason { color: var(--warn); font-size: 12px; }
-  .prog { color: var(--dim); font-size: 12px; }
-  .banner { background: #2a1f1f; border-color: #5b2323; color: #fca5a5;
-            padding: 10px 16px; font-size: 13px; border-radius: 6px; margin-bottom: 12px; }
-  /*----- Comparison dialog */
-  dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
-           border-radius: 8px; padding: 0; max-width: 1100px; width: 92vw; }
-  dialog::backdrop { background: rgba(0,0,0,.65); }
-  dialog h3 { margin: 0; padding: 12px 16px; font-size: 13px; text-transform: uppercase;
-              letter-spacing: .08em; color: var(--dim); border-bottom: 1px solid var(--line); }
-  .dlg-body { max-height: 70vh; overflow: auto; }
-  .dlg-foot { padding: 10px 16px; border-top: 1px solid var(--line);
-              display: flex; justify-content: space-between; align-items: center; gap: 12px; }
   .paths { padding: 10px 16px; font-size: 12px; color: var(--dim);
            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
   .paths div { margin: 2px 0; }
@@ -73,7 +125,25 @@
   .tag.ungated { color: var(--warn); border-color: #5b4a23; }
   .note { padding: 8px 16px; font-size: 12px; color: var(--warn);
           border-bottom: 1px solid var(--line); }
-  .gone td { opacity: .55; }
+  .det-head { display: flex; gap: 16px; padding: 14px 16px;
+              border-bottom: 1px solid var(--line); }
+  .det-head .art { width: 92px; height: 138px; }
+  .det-head .meta { min-width: 0; }
+  .det-head .meta .big { font-size: 17px; font-weight: 600; }
+  .det-head .meta .row { font-size: 12px; color: var(--dim); margin-top: 3px;
+                         overflow-wrap: anywhere; }
+  .det-head .meta .row.warn { color: var(--warn); }
+  .hist { padding: 10px 16px; font-size: 12px; }
+  .hist .h { color: var(--dim); text-transform: uppercase; letter-spacing: .06em;
+             font-size: 11px; margin-bottom: 6px; }
+  .hist div.e { display: flex; gap: 12px; padding: 2px 0; }
+  .hist div.e span.t { color: var(--dim); font-family: ui-monospace, Menlo, monospace;
+                       flex: 0 0 auto; }
+  .lst .row { padding: 10px 16px; border-bottom: 1px solid var(--line);
+              display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .lst .row:last-child { border-bottom: none; }
+  .lst .row .why { font-size: 12px; color: var(--warn); margin-top: 2px; }
+  .lst .row .nm { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -85,20 +155,58 @@
   <span class="pill" id="libs">libraries</span>
   <span class="pill" id="dry"></span>
 </header>
+
 <main>
-  <section>
-    <h2>Pipeline</h2>
-    <div class="body"><div class="grid" id="stats"></div></div>
+  <section class="box" id="b-queue">
+    <h2>Queue <span class="n" id="n-queue">0</span></h2>
+    <div class="fill"><div class="tiles" id="t-queue"></div></div>
   </section>
-  <section>
-    <h2>Needs a decision</h2>
-    <div id="held"></div>
+
+  <div class="arrow" id="a-enc">&#8594;</div>
+
+  <section class="box" id="b-enc">
+    <h2>Encoding <span class="n" id="n-enc">0</span></h2>
+    <div class="fill"><div class="tiles" id="t-enc"></div></div>
   </section>
-  <section>
-    <h2>Titles</h2>
-    <div id="titles"></div>
+
+  <div class="arrow" id="a-held">&#8594;
+    <span class="back">&#8592; retry or force<br>through returns it</span>
+  </div>
+
+  <section class="box" id="b-held">
+    <h2>Held <span class="n" id="n-held">0</span></h2>
+    <div class="fill"><div class="tiles" id="t-held"></div></div>
   </section>
+
+  <div class="arrow" id="a-ready">&#8594;</div>
+
+  <section class="box" id="b-ready">
+    <h2>Ready to promote <span class="n" id="n-ready">0</span></h2>
+    <div class="fill"><div class="tiles" id="t-ready"></div></div>
+  </section>
+
+  <div id="corner">
+    <div class="counter" id="c-quar" onclick="showList('QUARANTINED')">Quarantined Files: <b>0</b></div>
+    <div class="counter" id="c-fail" onclick="showList('FAILED')">Failed Jobs: <b>0</b></div>
+  </div>
 </main>
+
+<dialog id="det">
+  <h3 id="det-h">Title</h3>
+  <div class="det-head" id="det-head"></div>
+  <div class="dlg-body" id="det-body"></div>
+  <div class="dlg-foot">
+    <div class="acts" id="det-acts"></div>
+    <button onclick="$('det').close()">Close</button>
+  </div>
+</dialog>
+
+<dialog id="lst">
+  <h3 id="lst-h">List</h3>
+  <div class="dlg-body lst" id="lst-body"></div>
+  <div class="dlg-foot"><span></span><button onclick="$('lst').close()">Close</button></div>
+</dialog>
+
 <dialog id="cmp">
   <h3 id="cmp-title">Comparison</h3>
   <div id="cmp-notes"></div>
@@ -109,19 +217,93 @@
     <button onclick="$('cmp').close()">Close</button>
   </div>
 </dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+const QUEUE_STAGES = ["DETECTED", "PROBED", "SCREENED", "IDENTIFIED", "COMPARED",
+                      "STAGED", "REMUXED", "TAGGED", "READY"];
+const ENC_STAGES = ["ENCODING", "ENCODED", "VERIFIED"];
+const READY_STAGES = ["PUBLISHED", "CLEANUP"];
+
+let TITLES = {};
+let ALL = [];
+const SIG = {};
+
 function pill(el, text, cls) {
   el.textContent = text;
   el.className = "pill" + (cls ? " " + cls : "");
 }
-
 function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function fmtEta(s) {
+  if (s < 60) return Math.round(s) + "s";
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h ? h + "h " + m + "m" : m + "m";
+}
+function base(p) { return String(p || "").split("/").pop(); }
+function label(t) { return t.title || t.show || base(t.source_path); }
 
-//----- Fetch and redraw, every 5 seconds
+//----- Artwork, with a text placeholder on the same footprint
+function art(t) {
+  const ph = `<div class="ph">${esc(base(t.source_path))}</div>`;
+  const img = t.poster_url
+    ? `<img src="/api/poster/${t.id}" alt="" loading="lazy"
+            onerror="this.style.display='none'">`
+    : "";
+  return `<div class="art">${ph}${img}</div>`;
+}
+
+//----- Television collapses to one tile per show, movies never group
+function group(list) {
+  const out = [], shows = new Map();
+  for (const t of list) {
+    if (t.kind === "tv" && t.show) {
+      let g = shows.get(t.show);
+      if (!g) { g = { show: t.show, items: [] }; shows.set(t.show, g); out.push(g); }
+      g.items.push(t);
+    } else {
+      out.push({ items: [t] });
+    }
+  }
+  return out;
+}
+
+function tile(g, sub) {
+  const head = g.items[0];
+  const many = g.items.length > 1;
+  const name = many ? g.show : label(head);
+  const second = many
+    ? `<div class="s">${esc(g.items.length)} episodes</div>`
+    : (sub ? sub(head) : "");
+  const target = many
+    ? `data-show="${esc(g.show)}"`
+    : `data-id="${esc(head.id)}"`;
+  return `<div class="tile" ${target}>
+      ${art(head)}
+      <div class="tt"><div class="n">${esc(name)}</div>${second}</div>
+    </div>`;
+}
+
+//----- One delegated listener, so no title text is ever interpolated into JS
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest ? ev.target.closest(".tile") : null;
+  if (!el) return;
+  if (el.dataset.show !== undefined) showList("GROUP", el.dataset.show);
+  else if (el.dataset.id !== undefined) showDetail(Number(el.dataset.id));
+});
+
+function paint(boxId, countId, list, sub, emptyText) {
+  const groups = group(list);
+  const html = groups.length === 0
+    ? `<div class="empty">${esc(emptyText)}</div>`
+    : groups.map(g => tile(g, sub)).join("");
+  if (SIG[boxId] !== html) { SIG[boxId] = html; $(boxId).innerHTML = html; }
+  $(countId).textContent = list.length;
+}
+
+//----- Fetch and redraw
 async function refresh() {
   let s;
   try { s = await (await fetch("/api/status")).json(); }
@@ -138,58 +320,130 @@ async function refresh() {
   pill($("dry"), s.config.DRY_RUN ? "DRY RUN" : "", s.config.DRY_RUN ? "warn" : "");
   $("dry").style.display = s.config.DRY_RUN ? "" : "none";
 
-  const stages = s.stages || {};
-  $("stats").innerHTML = [
-    ["queue", s.queue_depth],
-    ["gpu jobs", s.slots.gpu_active],
-    ["cpu jobs", s.slots.cpu_active],
-    ["encoding", stages.ENCODING || 0],
-    ["held", stages.HELD || 0],
-    ["ready to promote", (stages.PUBLISHED || 0) + (stages.CLEANUP || 0)],
-    ["quarantined", stages.QUARANTINED || 0],
-    ["failed", stages.FAILED || 0],
-  ].map(([k, v]) =>
-    `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`
-  ).join("");
-
-  const held = await (await fetch("/api/held")).json();
-  $("held").innerHTML = held.length === 0
-    ? '<div class="empty">Nothing is waiting on you.</div>'
-    : `<table><tr><th>Source</th><th>Reason</th><th></th></tr>` + held.map(h => `
-        <tr>
-          <td class="name">${esc(h.source_path.split("/").pop())}</td>
-          <td class="reason">${esc(h.reason || "")}</td>
-          <td style="white-space:nowrap">
-            <button onclick="decide(${h.id},'retry')">Retry</button>
-            <button onclick="decide(${h.id},'override')">Force through</button>
-            <button class="bad" onclick="decide(${h.id},'discard')">Discard</button>
-          </td>
-        </tr>`).join("") + `</table>`;
-
   const prog = s.progress || {};
-  const titles = await (await fetch("/api/titles")).json();
+  let titles;
+  try { titles = await (await fetch("/api/titles")).json(); }
+  catch (e) { return; }
+  ALL = titles;
   TITLES = {};
   titles.forEach(t => { TITLES[t.id] = t; });
-  $("titles").innerHTML = titles.length === 0
-    ? '<div class="empty">Nothing has been imported yet.</div>'
-    : `<table><tr><th>Source</th><th>Kind</th><th>Stage</th><th>Encoder</th><th>Grain</th><th></th></tr>`
-      + titles.slice(0, 60).map(t => `
-        <tr class="${t.files_gone ? "gone" : ""}">
-          <td class="name">${esc(t.source_path.split("/").pop())}</td>
-          <td>${esc(t.kind || "")}</td>
-          <td>${esc(t.display_stage || t.stage)}${stageDetail(t, prog[t.id])}${
-            t.files_gone ? '<span class="tag">files gone</span>'
-            : t.quarantine_present ? '<span class="tag">files quarantined</span>' : ""}</td>
-          <td>${esc(t.encoder || "")}</td>
-          <td>${t.grain_ratio === null || t.grain_ratio === undefined ? "" : esc(t.grain_ratio)}</td>
-          <td style="white-space:nowrap">${
-            t.comparison ? `<button onclick="showCompare(${t.id})">Compare</button>` : ""}${
-            t.files_gone ? ` <button class="bad" onclick="decide(${t.id},'forget')">Forget</button>` : ""}</td>
-        </tr>`).join("") + `</table>`;
+
+  const inStage = (set) => titles.filter(t => set.includes(t.stage));
+
+  paint("t-queue", "n-queue", inStage(QUEUE_STAGES),
+        (t) => `<div class="s">${esc(t.display_stage || t.stage)}</div>`,
+        "Nothing waiting.");
+
+  paint("t-enc", "n-enc", inStage(ENC_STAGES), (t) => {
+    const p = prog[t.id];
+    const bits = [t.encoder || t.display_stage || ""];
+    if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
+    const pct = p && p.percent != null ? p.percent : null;
+    const line = esc(bits.filter(Boolean).join("   "));
+    if (pct == null) return `<div class="s">${line}</div>`;
+    const w = Math.max(0, Math.min(100, pct));
+    return `<div class="s">${line}</div>
+      <div class="bar"><i style="width:${w}%"></i></div>
+      <div class="s">${esc(pct.toFixed(1))}%</div>`;
+  }, "Nothing encoding.");
+
+  paint("t-held", "n-held", titles.filter(t => t.stage === "HELD"),
+        (t) => `<div class="s warn">${esc(t.reason || "needs a decision")}</div>`,
+        "Nothing is waiting on you.");
+
+  paint("t-ready", "n-ready", inStage(READY_STAGES),
+        (t) => `<div class="s">${esc(base(t.output_path) || "ready to collect")}</div>`,
+        "Nothing to collect.");
+
+  const q = titles.filter(t => t.stage === "QUARANTINED").length;
+  const f = titles.filter(t => t.stage === "FAILED").length;
+  $("c-quar").innerHTML = `Quarantined Files: <b>${q}</b>`;
+  $("c-fail").innerHTML = `Failed Jobs: <b>${f}</b>`;
 }
 
-let TITLES = {};
+//----- Detail dialog
+async function showDetail(id) {
+  let t = TITLES[id];
+  try { t = await (await fetch(`/api/titles/${id}`)).json(); } catch (e) {}
+  if (!t) return;
+  TITLES[id] = t;
 
+  $("det-h").textContent = label(t) + (t.year ? ` (${t.year})` : "");
+
+  const ids = [t.tmdb ? "tmdb " + t.tmdb : "", t.imdb ? "imdb " + t.imdb : "",
+               t.tvdb ? "tvdb " + t.tvdb : ""].filter(Boolean).join("   ");
+  const files = t.files_gone ? "files gone"
+    : t.quarantine_present ? "files quarantined"
+    : t.output_present ? "output present" : "source present";
+  $("det-head").innerHTML = `${art(t)}
+    <div class="meta">
+      <div class="big">${esc(label(t))}${t.year ? " (" + esc(t.year) + ")" : ""}</div>
+      ${ids ? `<div class="row">${esc(ids)}</div>` : ""}
+      <div class="row">${esc(t.display_stage || t.stage)}${
+        t.encoder ? "   " + esc(t.encoder) : ""}   ${esc(files)}</div>
+      ${t.reason ? `<div class="row warn">${esc(t.reason)}</div>` : ""}
+      <div class="row">${esc(t.source_path)}</div>
+      ${t.output_path ? `<div class="row">${esc(t.output_path)}</div>` : ""}
+    </div>`;
+
+  const hist = (t.history || []).map(e =>
+    `<div class="e"><span class="t">${esc(clock(e.at))}</span>
+       <span>${esc(e.stage)}</span><span style="color:var(--dim)">${esc(e.detail || "")}</span></div>`
+  ).join("");
+  $("det-body").innerHTML = `<div class="hist"><div class="h">Stage history</div>${
+    hist || '<div class="empty">No history.</div>'}</div>`;
+
+  const acts = [];
+  if (t.comparison) acts.push(`<button onclick="showCompare(${t.id})">Compare</button>`);
+  if (t.stage === "HELD" || t.stage === "FAILED") {
+    acts.push(`<button onclick="act(${t.id},'retry')">Retry</button>`);
+    acts.push(`<button onclick="act(${t.id},'override')">Force through</button>`);
+    acts.push(`<button class="bad" onclick="act(${t.id},'discard')">Discard</button>`);
+  }
+  if (t.files_gone) acts.push(`<button class="bad" onclick="act(${t.id},'forget')">Forget</button>`);
+  $("det-acts").innerHTML = acts.join("");
+  $("det").showModal();
+}
+
+function clock(epoch) {
+  if (!epoch) return "";
+  const d = new Date(epoch * 1000);
+  return d.toTimeString().slice(0, 8);
+}
+
+//----- Quarantined, failed, and expanded show groups
+function showList(kind, show) {
+  let rows, heading;
+  if (kind === "GROUP") {
+    rows = ALL.filter(t => t.kind === "tv" && t.show === show);
+    heading = show + " - " + rows.length + " episode(s)";
+  } else {
+    rows = ALL.filter(t => t.stage === kind);
+    heading = kind === "QUARANTINED"
+      ? "Quarantined files - " + rows.length
+      : "Failed jobs - " + rows.length;
+  }
+  $("lst-h").textContent = heading;
+  $("lst-body").innerHTML = rows.length === 0
+    ? '<div class="empty" style="padding:16px">Nothing here.</div>'
+    : rows.map(t => `<div class="row">
+        <div>
+          <div class="nm">${esc(label(t))}${
+            t.season != null && t.episode != null
+              ? " - S" + String(t.season).padStart(2, "0") + "E" + String(t.episode).padStart(2, "0")
+              : ""}</div>
+          <div style="font-size:12px;color:var(--dim)">${esc(base(t.source_path))}</div>
+          ${t.reason ? `<div class="why">${esc(t.reason)}</div>` : ""}
+        </div>
+        <div style="white-space:nowrap">
+          <button onclick="$('lst').close();showDetail(${t.id})">Details</button>
+          ${t.comparison ? `<button onclick="$('lst').close();showCompare(${t.id})">Compare</button>` : ""}
+        </div>
+      </div>`).join("");
+  $("lst").showModal();
+}
+
+//----- Comparison table
 function cell(v) {
   if (v === null || v === undefined || v === "") return '<td class="val">-</td>';
   if (v === true) return '<td class="val">yes</td>';
@@ -204,11 +458,9 @@ async function showCompare(id) {
   const out = t.output_probe || null;
   const rows = c.table || [];
 
-  $("cmp-title").textContent = "Comparison - " + (t.title || t.source_path.split("/").pop());
-
+  $("cmp-title").textContent = "Comparison - " + label(t);
   $("cmp-notes").innerHTML = (c.notes || [])
     .map(n => `<div class="note">${esc(n)}</div>`).join("");
-
   $("cmp-paths").innerHTML = [
     ["incoming", c.incoming_path],
     ["incumbent", c.incumbent_path],
@@ -218,10 +470,9 @@ async function showCompare(id) {
 
   const head = `<tr><th>Attribute</th><th>Gate</th><th>Incoming</th><th>Incumbent</th>${
     out ? "<th>Published</th>" : ""}</tr>`;
-
   $("cmp-body").innerHTML = `<table>${head}` + rows.map(r => {
     const tags = [];
-    if (r.decided) tags.push('<span class="tag decided">decided here</span>');
+    if (r.decided) tags.push('<span class="tag decided">voted here</span>');
     if (!r.gate && r.differs && r.measurable) tags.push('<span class="tag ungated">no gate</span>');
     if (r.gate && !r.measurable) tags.push('<span class="tag">not measurable</span>');
     return `<tr class="${r.decided ? "decided" : (r.differs ? "differs" : "")}">
@@ -232,39 +483,24 @@ async function showCompare(id) {
   }).join("") + `</table>`;
 
   const v = c.verdict || "";
-  pill($("cmp-verdict"), `${v}${c.gate ? " at gate " + c.gate : ""}${c.reason ? " - " + c.reason : ""}`,
+  const gates = (c.gates && c.gates.length) ? " at gate " + c.gates.join(", ") : "";
+  pill($("cmp-verdict"), `${v}${gates}${c.reason ? " - " + c.reason : ""}`,
        v === "win" ? "ok" : (v === "loss" ? "bad" : "warn"));
   $("cmp").showModal();
 }
 
-//----- Encode progress, only present while an encoder is running
-function stageDetail(t, p) {
-  if (!p) return "";
-  const bits = [];
-  if (p.percent !== undefined && p.percent !== null) bits.push(p.percent.toFixed(1) + "%");
-  if (p.eta_s !== undefined && p.eta_s !== null) bits.push(fmtEta(p.eta_s) + " left");
-  if (p.speed) bits.push(p.speed + "x");
-  return bits.length ? ` <span class="prog">${bits.join(", ")}</span>` : "";
-}
-
-function fmtEta(s) {
-  if (s < 60) return s + "s";
-  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return h ? h + "h " + m + "m" : m + "m";
-}
-
-//----- Operator actions on a held or failed title
-async function decide(id, action) {
+//----- Operator actions
+async function act(id, action) {
   await fetch(`/api/held/${id}/decision`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({action}),
   });
+  $("det").close();
   refresh();
 }
 
 refresh();
-//----- Poll
 setInterval(refresh, 5000);
 </script>
 </body>

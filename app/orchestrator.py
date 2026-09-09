@@ -377,8 +377,16 @@ class Orchestrator:
             tmdb=identity.get("tmdb"),
             imdb=identity.get("imdb"),
             tvdb=identity.get("tvdb"),
+            poster_url=self._poster_url(kind, identity),
         )
         return identity
+
+    def _poster_url(self, kind, identity):
+        try:
+            return self.provider.tmdb_poster(kind, identity.get("tmdb"))
+        except Exception as exc:
+            log.debug("poster url lookup failed: %s", exc)
+            return None
 
     def _compare(self, title_id, container, identity, kind, source):
         if not self.layout.libraries:

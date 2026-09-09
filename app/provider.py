@@ -31,6 +31,11 @@ WIKIDATA_ENTITY = "https://www.wikidata.org/wiki/Special:EntityData/%s.json"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 TMDB_MOVIE = "https://www.themoviedb.org/movie/%s"
 TMDB_TV = "https://www.themoviedb.org/tv/%s"
+
+OG_IMAGE = re.compile(
+    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    re.I,
+)
 TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
 TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
 
@@ -229,6 +234,23 @@ class Provider:
         needle = re.sub(r"[^a-z0-9]+", "", title.lower())
         haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
         return needle in haystack
+
+    def tmdb_poster(self, kind, tmdb_id):
+        if not tmdb_id:
+            return None
+        url = (TMDB_MOVIE if kind == "movie" else TMDB_TV) % tmdb_id
+        try:
+            status, body = self.client.fetch(url)
+        except ProviderError as exc:
+            log.debug("poster lookup failed for %s: %s", url, exc)
+            return None
+        if status != 200:
+            return None
+        match = OG_IMAGE.search(body)
+        if not match:
+            log.debug("no og:image on %s", url)
+            return None
+        return match.group(1)
 
     #----- The movie identity ladder
     def movie_candidates(self, source, container):

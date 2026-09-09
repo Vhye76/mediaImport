@@ -362,6 +362,14 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-70  HTTPS answers.**  'curl -sk https://localhost/api/status'.  Expect JSON.
 - **T-71  Plain HTTP does not.**  'curl -s http://localhost:443/api/status'.  Expect a failure, not a redirect and not a served page.
 - **T-72  The dashboard is served.**  'curl -sk https://localhost/'.  Expect HTML.
+- **T-76  A poster appears once a title is identified.**  Import a film with a resolvable tmdb id.  Expect '/api/titles/<id>' to carry a 'poster_url' after IDENTIFIED, and 'GET /api/poster/<id>' to return image bytes with an image content type.
+- **T-77  A title with no poster falls back to a text tile.**  A file held at the standards gate, which never identifies.  Expect 'poster_url' null, '/api/poster/<id>' to answer 404, and the tile to show the filename on the same footprint rather than a blank.
+- **T-78  Posters are served from the container, not from TMDB.**  After a poster has been fetched once, confirm a file exists under 'config/cache/posters', then block outbound internet and reload the dashboard.  Expect the poster still rendered.
+- **T-79  A poster fetch never blocks identification.**  While a dashboard with uncached posters is loading, confirm a title still advances through IDENTIFIED at the normal rate.  The poster path must not sit behind the 3 second provider throttle.
+- **T-80  Television collapses to one tile per show.**  Import a season.  Expect one tile carrying the series poster and the episode count, the box header counting titles rather than tiles, and clicking the tile to list the episodes.
+- **T-81  A held title is actionable from its tile.**  Click a held tile.  Expect the detail dialog with Compare, Retry, Force through and Discard, and each button to reach '/api/held/<id>/decision'.
+- **T-82  The counters are clickable and independent.**  With titles in both states, expect 'Quarantined Files' and 'Failed Jobs' to open separate lists, each showing the reason per title and a Compare button where a comparison exists.
+- **T-83  The layout fits 1920x1080.**  Load the dashboard at that size with every box populated.  Expect no page scrollbar, and each box to scroll internally instead.
 - **T-73  A held decision requeues.**  POST 'retry' against a held title.  Expect it leaves HELD.
 - **T-74  An unknown action is refused.**  POST 'nonsense'.  Expect a 4xx and no state change.
 - **T-75  An unknown title is 404.**  GET '/api/titles/999999'.  Expect 404.
