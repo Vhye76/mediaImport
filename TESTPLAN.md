@@ -138,6 +138,10 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 - **T-18  SD television is accepted.**  A 720x480 episode.  Expect it proceeds past SCREENED.
 - **T-18a  The crop floor is 20 px.**  One source with bars between 10 and 19 px and one with bars above 20 px.  Expect the first published uncropped and reporting 'letterbox_px' 0, and the second cropped.  A 24-file library sample found the 10 to 19 px band empty, so the first file has to be constructed.
 
+- **T-19a  The override clears a comparison hold.**  Take a title to HELD on a contradictory comparison, press Force through, and expect it to pass COMPARED with the detail naming the override and continue into the encoder rather than holding again.  Assert on the stage history.
+- **T-19b  An overridden title skips the incumbent work.**  For the same run, assert no comparison object was recorded.  Its absence is what proves the gate was skipped rather than recomputed, which a verdict alone cannot show.
+- **T-19c  The override does not survive a re-import.**  Drop the same source back into 'import/' afterwards and expect it gated normally on the fresh run.
+
 **T-19  The override forces a held title through.**
 
 - **Start:**  a title held by T-12.
@@ -369,6 +373,11 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-80  Television collapses to one tile per show.**  Import a season.  Expect one tile carrying the series poster and the episode count, the box header counting titles rather than tiles, and clicking the tile to list the episodes.
 - **T-81  A held title is actionable from its tile.**  Click a held tile.  Expect the detail dialog with Compare, Retry, Force through and Discard, and each button to reach '/api/held/<id>/decision'.
 - **T-82  The counters are clickable and independent.**  With titles in both states, expect 'Quarantined Files' and 'Failed Jobs' to open separate lists, each showing the reason per title and a Compare button where a comparison exists.
+- **T-84  A TVDB-only show gets artwork.**  Import a season of a show that resolves tvdb but not tmdb.  Expect 'poster_url' populated from artworks.thetvdb.com and the group tile to render it.
+- **T-85  A season resolves its slug once.**  Time a fresh season import against a single-episode one.  Expect the difference to be the per-episode work only;  a season paying an extra 3 seconds per episode means the poster memo is not holding.
+- **T-86  The group tile names the show.**  A television group with no artwork available.  Expect its placeholder to read the show name, not one episode's filename.
+- **T-87  The episode list acts at both levels.**  Open a held season.  Expect per-row Retry, Force through and Discard, plus header actions for all of them, and expect a header action to close the list and move every episode back to Queue.
+- **T-88  Quarantined rows offer no decisions.**  Open the Quarantined list.  Expect Details and Compare only, since the decision endpoint rejects a title that is not awaiting one.
 - **T-83  The layout fits 1920x1080.**  Load the dashboard at that size with every box populated.  Expect no page scrollbar, and each box to scroll internally instead.
 - **T-73  A held decision requeues.**  POST 'retry' against a held title.  Expect it leaves HELD.
 - **T-74  An unknown action is refused.**  POST 'nonsense'.  Expect a 4xx and no state change.

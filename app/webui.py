@@ -231,7 +231,7 @@ class WebUI:
             return {"ok": True, "action": "requeued"}
         if action == "override":
             self.store.update(title_id, overridden=1)
-            self.store.advance(title_id, state.DETECTED, "operator overrode the standards gate")
+            self.store.advance(title_id, state.DETECTED, "operator overrode the gates")
             self.orchestrator.queue.put(title_id)
             return {"ok": True, "action": "overridden and requeued"}
         if action == "discard":

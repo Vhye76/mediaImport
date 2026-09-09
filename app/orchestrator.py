@@ -383,12 +383,23 @@ class Orchestrator:
 
     def _poster_url(self, kind, identity):
         try:
-            return self.provider.tmdb_poster(kind, identity.get("tmdb"))
+            url = self.provider.tmdb_poster(kind, identity.get("tmdb"))
+            if url:
+                return url
+            if kind == "tv":
+                return self.provider.tvdb_poster(identity.get("tvdb"))
         except Exception as exc:
             log.debug("poster url lookup failed: %s", exc)
-            return None
+        return None
 
     def _compare(self, title_id, container, identity, kind, source):
+        row = self.store.get(title_id)
+        if row.get("overridden"):
+            log.info("title %s comparison overridden by operator", title_id)
+            self.store.advance(
+                title_id, state.COMPARED, "comparison overridden by operator"
+            )
+            return
         if not self.layout.libraries:
             self.store.advance(
                 title_id, state.COMPARED, "no library mounted, comparison skipped"

@@ -32,11 +32,16 @@ WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 TMDB_MOVIE = "https://www.themoviedb.org/movie/%s"
 TMDB_TV = "https://www.themoviedb.org/tv/%s"
 
+TVDB_POSTER = re.compile(
+    r"https://artworks\.thetvdb\.com/banners/posters/[^\"'\s>]+"
+)
+
 OG_IMAGE = re.compile(
     r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
     re.I,
 )
 TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
+TVDB_SERIES = "https://thetvdb.com/series/%s"
 TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
 
 EPISODE_LABEL = re.compile(
@@ -194,6 +199,7 @@ class Provider:
     def __init__(self, client, import_root=None):
         self.client = client
         self.import_root = os.path.normpath(str(import_root)) if import_root else None
+        self._tvdb_posters = {}
 
     def search_entities(self, term, limit=20):
         url = "%s?%s" % (
@@ -251,6 +257,25 @@ class Provider:
             log.debug("no og:image on %s", url)
             return None
         return match.group(1)
+
+    def tvdb_poster(self, tvdb_id):
+        if not tvdb_id:
+            return None
+        key = str(tvdb_id)
+        if key in self._tvdb_posters:
+            return self._tvdb_posters[key]
+        url = None
+        try:
+            status, body = self.client.fetch(TVDB_SERIES % self.series_slug(key))
+            if status == 200:
+                match = TVDB_POSTER.search(body)
+                url = match.group(0) if match else None
+                if url is None:
+                    log.debug("no poster artwork on the tvdb page for %s", key)
+        except Exception as exc:
+            log.debug("tvdb poster lookup failed for %s: %s", key, exc)
+        self._tvdb_posters[key] = url
+        return url
 
     #----- The movie identity ladder
     def movie_candidates(self, source, container):

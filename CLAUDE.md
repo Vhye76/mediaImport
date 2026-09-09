@@ -221,6 +221,8 @@ The 40 minute movie floor exists because a 10 minute bonus featurette once quali
 
 Failures go to 'hold/' with a written reason, never silently to quarantine.  The UI carries a per-title override that forces a title through anyway.
 
+THE OVERRIDE CLEARS EVERY GATE, NOT ONLY THIS ONE.  'overridden' was read in one place, '_screen', so Force through on a comparison hold set the flag, requeued the title, and '_compare' recomputed the identical verdict and held it again.  Blade Runner 2049 did that six times in one session, each pass re-probing the incumbent and re-running cropdetect on both sides for nothing.  '_compare' now reads the flag at its top, ahead of '_find_incumbent', so an overridden title spends no time on work whose answer is already discarded.  The consequence is deliberate:  a clear LOSS is forced through as well as an ambiguous verdict, so 'complete/' can hold a title the comparison rejected.  Nothing writes to a library and promotion stays manual, which is what keeps that safe.
+
 The letterbox check is cheap-first:  only a frame whose display aspect is 16:9 or 4:3 can hide baked in bars, so a warning is raised on those and the expensive cropdetect runs later, on candidates only.  Bars under about 20 px are not worth acting on.
 
 ## 8.  New versus incumbent comparison
@@ -238,6 +240,8 @@ Runs after identification and before any encode.  EVERY GATE IS EVALUATED AND TH
 ```
 
 Every vote a win proceeds.  Every vote a loss goes to quarantine with no encode spent.  VOTES IN BOTH DIRECTIONS GO TO HELD with a side-by-side attribute table in the UI, and so does a pair on which no gate voted at all.
+
+A held contradictory verdict has two exits and only two:  the operator override, which section 7 describes and which bypasses this gate entirely, or Discard, which quarantines the arrival.  Nothing resolves it automatically, because there is no correct automatic answer to a pair that is better in one respect and worse in another.
 
 FIRST-DIFFERENCE-WINS WAS THE BEHAVIOUR AND IT WAS NEVER WHAT THIS SECTION SAID.  'compare.compare' returned at the first differing gate and never evaluated a later one, so "level or contradictory goes to held" only ever fired for level, and a split verdict was settled silently by whichever gate happened to sit earliest.  Found 2026-09-08 while adding gate 6:  Blade Runner 2049 arrived at 9.024 Mbps h264 against a 1.326 Mbps HEVC incumbent, losing gate 5 on bit depth and winning gate 6 roughly fourfold once weighted.  Under the old model whichever of those two was placed first would have buried the other without trace.  It now holds for review.
 
@@ -418,6 +422,12 @@ TWO TRAPS IN SERVING IT, BOTH IN 'webui' NOW.
 'ProviderClient.fetch' CANNOT CARRY IMAGE BYTES.  It ends in 'response.read().decode("utf-8", "replace")', which destroys a JPEG.  Posters use 'webui.fetch_poster_bytes', which is a separate binary path.
 
 THE POSTER FETCH MUST NOT SHARE THE PROVIDER THROTTLE.  'fetch' calls '_wait' against one shared timestamp, spacing every request about 3 seconds apart.  Routing twenty uncached posters through it would serialise a dashboard load into a minute of blocking and would queue image requests ahead of identification.  Posters come from an image CDN, not from the Wikidata and TMDB hosts that spacing exists to be polite to.
+
+TELEVISION FALLS BACK TO TVDB, BECAUSE A SHOW OFTEN RESOLVES WITHOUT A TMDB ID.  Measured 2026-09-09:  a full Babylon 5 season resolved tvdb 70726 with tmdb null on all 22 episodes, so every one of them had no artwork while all 6 films alongside had both.  'provider.tvdb_poster' resolves the slug that 'series_slug' already produces, fetches 'https://thetvdb.com/series/<slug>', and takes the first URL under a '/banners/posters/' path segment.  Match on that segment:  the same page carries fanart, backgrounds, graphical and person art, and person art would put an actor's headshot on the tile.
+
+THE TVDB PAGE HAS NO 'og:image' AND NO PRIMARY MARKER.  Babylon 5's carries 13 unique posters and nothing says which is canonical, so "first" means first in document order.  It is correct on that show and unverified on any other;  another series may land on a fan edit or a non-English variant.  Accepted, because a wrong poster is cosmetic and touches no pipeline decision.
+
+MEMOISE THE RESULT PER SHOW, INCLUDING THE FAILURES.  'Client.final_url' is not cached and calls '_wait', so it pays the full 3 second spacing every call, and '_poster_url' runs once per title.  Without the memo a 22 episode season resolves the same slug 22 times and adds over a minute of pure throttle.  'tvdb_poster' caches misses as well as hits and catches broadly rather than on ProviderError:  'final_url' lets urllib's HTTPError escape unwrapped, so a narrow except would skip the memo write and make every episode retry a lookup that already failed.
 
 Posters are cached under 'config/cache/posters' keyed by a hash of the URL, and served from '/api/poster/<title_id>' with a long cache header.  The browser never contacts TMDB, so section 3's no-CDN rule holds and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch failure serves 404 and the UI falls back to a text tile;  artwork is never allowed to be a failure the pipeline notices.
 
@@ -827,9 +837,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.10.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.11.
 
-TAGS ARE BARE NUMERIC.  '0.0.10', not 'v0.0.10'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.11', not 'v0.0.11'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 
