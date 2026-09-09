@@ -28,7 +28,7 @@
   /*----- The flow */
   main { flex: 1 1 auto; min-height: 0; padding: 20px 24px 8px;
          display: grid; gap: 0 14px;
-         grid-template-columns: 450px 54px minmax(0,1fr) 54px minmax(0,1fr);
+         grid-template-columns: 540px 54px minmax(0,1fr) 54px minmax(0,1fr);
          grid-template-rows: minmax(0,1fr) minmax(0,1fr); }
   .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
          display: flex; flex-direction: column; min-height: 0; margin-bottom: 14px; }
@@ -57,7 +57,7 @@
   /*----- Tiles */
   .tiles { display: grid; gap: 12px;
            grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #b-queue .tiles { gap: 10px; }
+  #b-queue .tiles { gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tile { display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
           border: 1px solid transparent; border-radius: 6px; padding: 6px;
           background: #171a20; }

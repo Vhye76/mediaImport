@@ -120,8 +120,8 @@ The whole per-title work area lives on the encode mount, not just the encode.  A
 | TV_ENCODE_SD | 0 | 1 re-enables SD television encoding |
 | WEB_PORT | 443 | HTTPS only, there is no HTTP listener |
 | DRY_RUN | 0 | 1 logs every intended action and performs none |
-| POLL_INTERVAL | 60 | import watch interval in seconds |
-| MTIME_QUIET | 120 | seconds a file must be untouched before it counts as stable |
+| POLL_INTERVAL | 15 | import watch interval in seconds |
+| MTIME_QUIET | 30 | seconds a file must be untouched before it counts as stable.  Keep POLL_INTERVAL below this |
 | LOCK_WAIT_TIMEOUT | 0 | seconds to wait for the instance lock, 0 waits indefinitely |
 | LOCK_WAIT_INTERVAL | 15 | how often to retry the instance lock |
 | GRAIN_THRESHOLD | 0.18 | denoise delta above which a source counts as grainy |
@@ -253,7 +253,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.0.11, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
+Current version 0.0.12, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

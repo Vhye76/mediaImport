@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import logging
 import os
@@ -413,7 +414,7 @@ class Provider:
                 {
                     "season": int(season),
                     "episode": int(episode),
-                    "title": re.sub(r"<[^>]+>", "", title).strip(),
+                    "title": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
                 }
             )
         return found

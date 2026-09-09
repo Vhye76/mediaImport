@@ -378,6 +378,11 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-86  The group tile names the show.**  A television group with no artwork available.  Expect its placeholder to read the show name, not one episode's filename.
 - **T-87  The episode list acts at both levels.**  Open a held season.  Expect per-row Retry, Force through and Discard, plus header actions for all of them, and expect a header action to close the list and move every episode back to Queue.
 - **T-88  Quarantined rows offer no decisions.**  Open the Quarantined list.  Expect Details and Compare only, since the decision endpoint rejects a title that is not awaiting one.
+- **T-89  Scraped titles carry no HTML entities.**  Import an episode whose provider title contains an apostrophe or an accent.  Expect the stored title decoded, for example "Let's Give the Boy a Hand" and not 'Let&#039;s Give the Boy a Hand', and the same on the published filename and the Matroska EPISODE tag.
+- **T-90  An entity title matches exactly, not fuzzily.**  For that same episode, expect the match method to be exact.  A fuzzy match means the decode did not happen:  one entity still scores about 0.86 and passes silently, which is the failure this case exists to catch.
+- **T-91  Detection lands inside the new window.**  Time a copy into 'import/' from completion to the 'detected' line.  Expect 30 to 45 seconds.  Repeat with a large file, where a slow write would show as a premature detection.
+- **T-92  A partial copy is still refused.**  Interrupt a copy mid-transfer and leave it untouched past MTIME_QUIET.  Expect it detected and then held by ffprobe or the minimum standards gate, never encoded.
+- **T-93  The queue holds three tiles per row.**  At 1920x1080 with the queue populated, expect three tiles across in Queue and two in every other box, with no page scrollbar.
 - **T-83  The layout fits 1920x1080.**  Load the dashboard at that size with every box populated.  Expect no page scrollbar, and each box to scroll internally instead.
 - **T-73  A held decision requeues.**  POST 'retry' against a held title.  Expect it leaves HELD.
 - **T-74  An unknown action is refused.**  POST 'nonsense'.  Expect a 4xx and no state change.

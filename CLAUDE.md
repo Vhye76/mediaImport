@@ -136,8 +136,8 @@ CRF                  18                default quality target
 TV_ENCODE_SD         0                 1 re-enables SD television encoding
 WEB_PORT             443               HTTPS only, there is no HTTP listener
 DRY_RUN              0                 1 logs every intended action and performs none
-POLL_INTERVAL        60                import watch interval, seconds
-MTIME_QUIET          120               seconds untouched before a file counts as stable
+POLL_INTERVAL        15                import watch interval, seconds
+MTIME_QUIET          30                seconds untouched before a file counts as stable
 LOCK_WAIT_TIMEOUT    0                 seconds to wait for the instance lock, 0 waits forever
 LOCK_WAIT_INTERVAL   15
 GRAIN_THRESHOLD      0.18              denoise delta above which a source counts as grainy
@@ -193,6 +193,10 @@ THE LANGUAGE STRIP RUNS BEFORE THE ENCODE.  The encoder maps every audio track a
 '/media/import' is the only watched entry point.  Nothing else is mounted, so nothing enters the chain that was not deliberately placed there.
 
 A file must be size-stable across two polls AND untouched for MTIME_QUIET seconds before it is detected.  Files ending in '.part' and files beginning with a dot are ignored outright.
+
+THOSE TWO CONDITIONS SET THE DETECTION WINDOW AND THEIR VALUES INTERACT.  MTIME_QUIET is the floor and the poll adds up to one interval on top of it, so 120 and 60 meant a finished copy stayed invisible for 120 to 180 seconds.  At 30 and 15 the window is 30 to 45.  Lowered 2026-09-09 because the original figures were sized for a stall that does not happen on a LAN copy;  the residual risk is a transfer paused longer than MTIME_QUIET, which looks identical to a finished file, and the consequence is bounded because a truncated file fails ffprobe or the minimum standards gate and holds rather than being encoded.
+
+KEEP POLL_INTERVAL BELOW MTIME_QUIET.  The size condition compares against a size recorded by a PREVIOUS poll, so the quiet window has to contain at least one poll for the pair to fire together.  Invert them and the first qualifying poll finds no previous size, returns false, and detection costs an extra interval.  Nothing in the code enforces the ordering.
 
 ## 7.  Minimum standards
 
@@ -410,6 +414,16 @@ THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-
 Measured 2026-09-08:  Return of the Jedi resolved to 'Star Wars: Episode VI – Return of the Jedi', which the section 9 transform renders as 'Star Wars Episode VI - Return of the Jedi' because an en dash becomes ' - '.  The library folder is 'Star Wars Episode VI Return of the Jedi (1983) [tmdbid-1892] [imdbid-tt0086190]', with no dash at all, so the prefix match failed and the title was compared against nothing before taking a full encode slot.  The transform was correct and the library entry predates it.  Both sides carried tmdbid 1892 and it was never consulted.
 
 A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  'no incumbent, treated as new' read identically whether the library held nothing or the lookup had failed, which is the shape section 21 warns about when selection rests on a single fallible query.  The COMPARED detail now separates four outcomes:  no library mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
+
+### Scraped text carries HTML entities
+
+DECODE THEM, AND DO IT AFTER STRIPPING TAGS.  'episodes_for_order' parses episode titles out of the TVDB page.  It stripped tags and never decoded entities, so the catalogue carried the transport form:  'Let&#039;s Give the Boy a Hand', 'S&iacute; Se Puede', 'In the Shadow of Z&#039;ha&#039;dum'.  Measured 2026-09-09:  2 of 110 Babylon 5 episodes and 5 of 96 Dexter episodes.
+
+THE QUIET FAILURE IS THE DANGEROUS ONE.  'titles.normalise_for_match' expands '&' to ' and ' before stripping punctuation, so '&#039;' becomes ' and 039 '.  A title with TWO entities falls to 0.758, misses the 0.82 cutoff, and drops to source numbering with a warning you can see.  A title with ONE still scores 0.86, matches, and writes the corrupt string into the store, the Matroska EPISODE tag, the segment Info title and the filename.  Dexter S01E04 did exactly that and was caught only because it was a self-comparison.  Section 9 says the tag is the provider's title verbatim;  verbatim means the decoded title, not its transport encoding.
+
+'html.unescape' from the standard library, applied AFTER the tag strip.  Reversed, an escaped '&lt;i&gt;' becomes a real tag and the tag strip eats literal text.  Verified 2026-09-09:  both failing titles went from 0.758 and 0.86 to an exact 1.000 match, and zero entities remain across 206 episodes.
+
+THE SCOPE IS THAT ONE CALL SITE, CHECKED RATHER THAN ASSUMED.  It is the only place a title string is extracted from scraped HTML.  'verify_tmdb' does a normalised substring test rather than extracting text, and passes on apostrophe titles;  the poster patterns extract URLs.  Wikidata is JSON and decodes natively.
 
 ### Cover art
 
@@ -837,9 +851,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.11.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.12.
 
-TAGS ARE BARE NUMERIC.  '0.0.11', not 'v0.0.11'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
+TAGS ARE BARE NUMERIC.  '0.0.12', not 'v0.0.12'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 

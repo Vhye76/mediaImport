@@ -135,8 +135,8 @@ class Config:
 
         self.web_port = _int("WEB_PORT", 443)
         self.dry_run = _bool("DRY_RUN", False)
-        self.poll_interval = _int("POLL_INTERVAL", 60)
-        self.mtime_quiet = _int("MTIME_QUIET", 120)
+        self.poll_interval = _int("POLL_INTERVAL", 15)
+        self.mtime_quiet = _int("MTIME_QUIET", 30)
         self.log_level = _str("LOG_LEVEL", "info").lower()
         self.render_node = _str("RENDER_NODE", "/dev/dri/renderD128")
         self.grain_threshold = _float("GRAIN_THRESHOLD", 0.18)
