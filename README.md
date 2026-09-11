@@ -31,10 +31,10 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
 | REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
-| READY | ready | Passed the readiness gate and is queued for an encoder slot. |
+| READY | ready | Passed the readiness gate, or was forced past it, and is queued for an encoder slot. |
 | ENCODING | encoding | An encoder is running.  Percent complete, estimated time remaining and speed appear beside it. |
 | ENCODED | encoded | The encoder finished, or the router chose passthrough and no re-encode was needed. |
-| VERIFIED | verified | Duration, track statistics and tag structure checked on the finished file. |
+| VERIFIED | verified | Duration, packet count, track statistics, tag structure and HDR declarations checked on the finished file, every failure collected before it holds. |
 | PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned. |
 | CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
 
@@ -71,7 +71,7 @@ app/            the pipeline: one module per concern
   webui.py        JSON API and dashboard
   audit.py        the background library sweep
   static/         the dashboard page
-Dockerfile      debian:trixie-slim plus ffmpeg, mkvtoolnix and the Intel media stack
+Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri
 TESTPLAN.md     container validation cases, executed by hand
 media/          the container icon, a placeholder
@@ -318,7 +318,9 @@ That is the whole of local validation.  Neither command executes a pipeline stag
 docker build -t mediaimport:local .
 ```
 
-The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv.  That check is deliberate:  it stops the image shipping while claiming encoders it does not have.  If it ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then jellyfin-ffmpeg from the Jellyfin apt repository.
+The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, or if its libx265 wrapper has no '-dolbyvision' option.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
+
+The image is Alpine 3.24, 282 MB, everything from Alpine's own repositories.  Every build increments the version in 'app/__init__.py';  the workflow refuses a version that is already tagged.
 
 Functionality is validated against the built container by hand, following 'TESTPLAN.md'.  That plan measures outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
@@ -348,7 +350,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.0.12, defined once in 'app/__init__.py' and consumed by the provider User-Agent and the startup log.
+Current version 0.1.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

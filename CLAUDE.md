@@ -42,14 +42,14 @@ app/
   audit.py          the background library sweep and its findings
   static/           the dashboard page, vanilla JS, no framework
 media/              the container icon, a placeholder, excluded from the image
-Dockerfile          debian:trixie-slim plus ffmpeg, mkvtoolnix, Intel media stack
+Dockerfile          alpine:3.24 plus ffmpeg, mkvtoolnix, Intel media stack
 entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri
 TESTPLAN.md         container validation cases, executed by hand
 ```
 
 'app/' is a single Python package with no third-party dependencies.  The standard library is sufficient and the HTTP client is hand-rolled on urllib.  KEEP IT THAT WAY.  No requests, no npm, no framework, no CDN.  A dependency-free image is trivially auditable and never breaks on a transitive upgrade.
 
-One process holds everything:  the orchestrator loop, the encode workers and the web UI on a thread.  That is deliberate.  The UI needs live orchestrator state, and every encode is a subprocess call, so the GIL is not a constraint.
+One process holds everything:  the orchestrator loop, the encode workers, the import watcher, the library auditor and the web UI, each on a thread.  That is deliberate.  The UI needs live orchestrator state, and every encode is a subprocess call, so the GIL is not a constraint.
 
 ## 4.  Mount contract
 
@@ -175,10 +175,10 @@ COMPARED     against library incumbent   loss -> QUARANTINE, ambiguous -> collec
 STAGED       copy into the encode job directory
 REMUXED      container conversion if needed, then language strip, then flag repair
 TAGGED       movie MOVIE block, or the three-level TV hierarchy
-READY        the readiness gate           fail -> HELD
+READY        the readiness gate           fail -> HELD, forceable
 ENCODING     the encoder is running, progress and ETA on /api/status
 ENCODED      route per section 14, or pass through
-VERIFIED     duration, statistics
+VERIFIED     duration, packets, statistics, readiness, HDR   fail -> HELD, forceable
 PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
@@ -635,9 +635,20 @@ libx265, preset slow, crf 18, pix_fmt yuv420p10le
 aq = aq-mode=4:tune=grain on film sources, aq-mode=3 otherwise
 ```
 
-HDR SIGNALLING TRAVELS INSIDE THE PARAMS STRING TOO.  For an HDR source 'x265_hdr_params' appends 'colorprim', 'transfer', 'colormatrix', 'range=limited', 'hdr10=1', 'master-display' from the ST 2086 figures and 'max-cll' from the light levels, taking the bitstream figures first and the container's second.  Measured in the image on 2026-09-10:  ffmpeg 7.1.5's libx265 wrapper carries all of that through on its own, from either surface, so the params are a guard against a wrapper that stops doing so rather than the mechanism.  'hdr10-opt' is deliberately NOT passed:  it changes chroma QP offsets and is a tuning decision, not signalling.
+HDR SIGNALLING TRAVELS INSIDE THE PARAMS STRING TOO.  For an HDR source 'x265_hdr_params' appends 'colorprim', 'transfer', 'colormatrix', 'range=limited', 'hdr10=1', 'master-display' from the ST 2086 figures and 'max-cll' from the light levels, taking the bitstream figures first and the container's second.  Measured in the image on 2026-09-10, on ffmpeg 7.1.5 and again on 8.1.2:  the libx265 wrapper carries all of that through on its own, from either surface, so the params are a guard against a wrapper that stops doing so rather than the mechanism.  'hdr10-opt' is deliberately NOT passed:  it changes chroma QP offsets and is a tuning decision, not signalling.
 
-DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS, NOT A NEW BINARY.  Measured on a Barbarella segment:  '-dolbyvision auto', which is what an unmodified argv gets, silently drops the RPU with no error and no DOVI record in the output.  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD".  '-dolbyvision 1' with 'vbv-maxrate' and 'vbv-bufsize' carries the RPU intact, container record and per-frame data both.  So for a DV title 'build_command' passes '-dolbyvision 1' and 'X265_DV_VBV_KBPS' for both VBV figures, and the Dockerfile build gate asserts the wrapper has the option.  THE VBV PAIR IS A DOCUMENTED DEVIATION FROM "DO NOT RETUNE THESE".  x265 will not encode a Dolby Vision profile without HRD, and HRD needs VBV, which caps the rate control for that one path.  40000 kbps is a starting point sized to sit above anything a 1080p CRF 18 encode produces;  it is unmeasured against a real DV encode because, per gate 1, none has happened.
+DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS, NOT A NEW BINARY.  Measured on a Barbarella segment:  '-dolbyvision auto', which is what an unmodified argv gets, silently drops the RPU with no error and no DOVI record in the output.  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD".  '-dolbyvision 1' with 'vbv-maxrate' and 'vbv-bufsize' carries the RPU intact, container record and per-frame data both.  So for a DV title 'build_command' passes '-dolbyvision 1' and 'X265_DV_VBV_KBPS' for both VBV figures, and the Dockerfile build gate asserts the wrapper has the option.
+
+KNOWN ISSUE:  'X265_DV_VBV_KBPS' IS AN UNMEASURED RATE CAP, AND IT IS THE ONLY CAP IN THE PIPELINE.  Every other x265 encode here is pure CRF with no ceiling.  x265 will not encode a Dolby Vision profile without HRD, HRD needs VBV, so the DV path alone carries 'vbv-maxrate' and 'vbv-bufsize', both set from 'X265_DV_VBV_KBPS', currently 40000.  That is a documented deviation from "DO NOT RETUNE THESE", and the number controls two things:
+
+- **Rate control.**  Under VBV, x265 raises QP wherever the bitrate over the buffer window would exceed the cap.  At CRF 18 that means quality is surrendered in exactly the highest-complexity scenes, and only there, whenever the cap binds.  40000 was chosen to sit above the peaks a 1080p CRF 18 slow encode produces, so that it never binds.  That is an expectation, not a measurement.
+- **The signalled level and tier.**  x265 derives the HEVC level and tier from resolution, frame rate and the VBV maxrate.  Measured on the Barbarella segment:  the plain CRF 18 encode signals Level 4, Main tier;  the same encode with the VBV pair signals Level 4.1, High tier, because 40000 kbps exceeds Main tier's 20000 at that level.  High tier is a different compatibility surface, and some hardware decoders that accept Main tier at 4.1 do not accept High.  Every DV encode from this pipeline currently carries that tier.
+
+'vbv-bufsize' equal to 'vbv-maxrate' is a one-second window.  A larger buffer averages peaks over a longer window and binds less often at the same maxrate;  it is a second knob and it is also unmeasured.
+
+Why it is unmeasured:  gate 1 passes every HEVC and AV1 source through, every Dolby Vision profile is one of those, so no DV title has reached an encoder and none can under the current router.  The value has been exercised exactly once, on a ten-second 1920x816 segment, where it did not bind:  12.17 Mbps with the pair against 11.86 without, the difference being HRD's own decisions rather than the cap.  It is correct by expectation only, and the first place that expectation would be tested is a UHD DV title after a change to gate 1's rule.
+
+To settle it:  encode one full-length 1080p DV title and one UHD DV title through the pipeline at the current cap, read the x265 log for VBV adjustments and the per-frame QP curve, and compare the bitrate curve against an uncapped CRF 18 encode of the same source.  If the cap never binds at 1080p, keep it there.  Decide the UHD figure separately and by tier.  Until then the constant stays a named starting point beside the AV1 parameters in section 14, which are the same kind of number.
 
 THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to the same '-x265-params' string, and 'lp=' to '-svtav1-params', from ENCODE_THREADS divided by CPU_SLOTS.  The quality settings above are settled by measurement and must not be touched;  the thread count is derived from the environment and is expected to differ between deployments.  A built command that carries 'pools=' has not been retuned.
 
@@ -718,7 +729,7 @@ Letterboxing            metadata first, cropdetect only on real candidates
 
 TRAP:  COMPARE VIDEO STREAM DURATION, NOT CONTAINER DURATION.  After a language strip the container figure can drop by several minutes with nothing lost, because the longest stream was a subtitle track that got removed.
 
-WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the structural tag readiness check.  The table above is the standard;  the full decode scan is deliberately NOT implemented, because it costs a complete read of the output per title and the packet count was judged to carry enough of the signal.  Section 4's I/O budget names the packet count pass rather than a decode pass so the two agree.  Measured 2026-09-08 on the first published title, an 89 minute encode preserved 128,424 video packets exactly, which is what makes an equality check rather than a tolerance the right shape here.
+WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the readiness check, which carries the structural tag test and the HDR invariant from section 12.  The table above is the standard;  the full decode scan is deliberately NOT implemented, because it costs a complete read of the output per title and the packet count was judged to carry enough of the signal.  Section 4's I/O budget names the packet count pass rather than a decode pass so the two agree.  Measured 2026-09-08 on the first published title, an 89 minute encode preserved 128,424 video packets exactly, which is what makes an equality check rather than a tolerance the right shape here.
 
 TRAP:  a decode scan does NOT catch dropped audio.  Surviving packets are valid and there is simply a hole in the timeline.  The reference defect, 193 gaps and roughly 150 seconds of missing audio, passed a clean decode.
 
@@ -870,11 +881,17 @@ DOCKER IGNORE PATTERNS ARE PATH-PREFIX MATCHED FROM THE CONTEXT ROOT, NOT gitign
 
 ## 22.  Image and build
 
-Base 'debian:trixie-slim'.  Busybox and dash are not sufficient and neither is Alpine:  the tooling relies on GNU coreutils behaviour.
+Base 'alpine:3.24'.  Moved from 'debian:trixie-slim' on 2026-09-10.  The earlier note that Alpine was insufficient because the tooling relies on GNU coreutils behaviour was true of busybox, not of Alpine:  Alpine packages GNU 'coreutils', 'findutils' and 'bash', and the image installs all three, so nothing in the tooling meets busybox.  The image went from 711 MB to 282 MB.
 
-Packages:  ffmpeg, mkvtoolnix, python3, bash, coreutils, findutils, jq, ca-certificates, tini, gosu, libcap2-bin, vainfo, intel-media-va-driver-non-free, libvpl2, libigdgmm12, intel-gpu-tools.  The non-free component must be enabled in the apt sources for the Intel media driver.
+Packages:  ffmpeg, mkvtoolnix, python3, bash, coreutils, findutils, jq, ca-certificates, tini, su-exec, shadow, libcap, libcap-utils, libva, libva-utils, intel-media-driver, libvpl, onevpl-intel-gpu.  All from Alpine's main and community repositories;  nothing non-free, nothing from a third-party repository, nothing static.
 
-'libcap2-bin' provides 'setcap' and is required at build time, not run time.  'openssl' is deliberately ABSENT:  nothing in this image generates a certificate, and adding the package would make that possible.  Leave it out.
+Three substitutions against the Debian set, each measured on 2026-09-10:  'su-exec' replaces 'gosu' with the same 'user:group command' shape;  'shadow' supplies 'useradd', 'groupadd' and 'usermod', which busybox's 'adduser' does not match;  'libva-utils' supplies 'vainfo'.  'intel-gpu-tools' has no Alpine package and is dropped;  nothing in the code referenced it.  '/usr/sbin/nologin' is a symlink the build creates, because Alpine's lives at '/sbin/nologin' and the entrypoint names the Debian path.
+
+VERSIONS THAT MOVED WITH THE BASE, and were re-measured:  ffmpeg 7.1.5 to 8.1.2, mkvtoolnix v92 to v99, python 3.13 to 3.14, x265 4.1 unchanged.  Every measurement in sections 12, 14 and 18 was repeated in the Alpine image and reproduced exactly:  ST 2086 and CLL carriage from either surface, the Colour element through both remux paths, '-dolbyvision auto' dropping the RPU, '-dolbyvision 1' with VBV carrying it, and mkvpropedit's property names.  'yuv420p10le' output confirmed Main 10.  The container was then run end to end under podman:  tini, the privilege drop, the instance lock, the layout, the GPU probe, the TLS listener, the dashboard, plain HTTP refused, and a clean SIGTERM to exit 0.
+
+'libcap-utils' provides 'setcap' and is required at build time, not run time.  'openssl' is deliberately ABSENT:  nothing in this image generates a certificate, and adding the package would make that possible.  Leave it out.
+
+musl rather than glibc.  Nothing in the package touches it:  the application is standard-library Python and every heavy operation is a subprocess call into ffmpeg, x265 or mkvtoolnix, all of which Alpine builds against musl routinely.  DNS goes through musl's resolver, which since 1.2.4 falls back to TCP for large answers, so the provider lookups are not affected.
 
 BINDING 443 AS A NON-ROOT PROCESS.  The entrypoint drops to PUID, and ports below 1024 need a capability.  The build applies 'cap_net_bind_service' to the resolved python binary, not to '/usr/bin/python3', because that is a symlink and 'setcap' does not follow symlinks.  Docker's default capability set already carries CAP_NET_BIND_SERVICE, so the compose file needs no 'cap_add'.  File capabilities live in extended attributes and are easy to lose silently, so the build verifies with 'getcap' immediately after setting it rather than assuming.
 
@@ -884,9 +901,11 @@ Firmware and the i915 binding come from the host kernel.  The image ships usersp
 
 The build FAILS if ffmpeg lacks libx265, libsvtav1 or av1_qsv.
 
-DO NOT DELETE THIS CHECK IF IT FAILS.  It exists so the image cannot ship claiming encoders it does not have.  The escalation order is av1_vaapi, which is the same hardware through VAAPI rather than oneVPL, then jellyfin-ffmpeg from the Jellyfin apt repository.  Pick one at build time and record which in an image label; never let the runtime choose.
+DO NOT DELETE THIS CHECK IF IT FAILS.  It exists so the image cannot ship claiming encoders it does not have.  The escalation order is av1_vaapi, which is the same hardware through VAAPI rather than oneVPL, then a pinned ffmpeg from Alpine's edge community repository.  Pick one at build time and record which in an image label; never let the runtime choose.
 
-VERIFIED 2026-09-07:  Debian trixie's ffmpeg carries libx265, libsvtav1, av1_qsv AND av1_vaapi.  No fallback is needed today.  This had been the single unverified assumption in the design.
+THE GATE ALSO ASSERTS THE LIBX265 WRAPPER HAS '-dolbyvision'.  Without it a Dolby Vision RPU cannot be carried through an encode, per section 14, and the build must not ship an ffmpeg older than 7.1 claiming otherwise.
+
+VERIFIED 2026-09-07 on Debian trixie and again 2026-09-10 on Alpine 3.24:  ffmpeg carries libx265, libsvtav1, av1_qsv AND av1_vaapi, and the wrapper has '-dolbyvision'.  No fallback is needed today.
 
 ### Runtime GPU probe
 
@@ -896,7 +915,9 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.0.12.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.1.0.
+
+EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals an existing tag is a build that cannot be told apart from the one before it, on the provider User-Agent, on the image label, or in a bug report.  The workflow's 'validate' job enforces it:  it reads 'VERSION' from 'app/__init__.py', fetches the tags, and fails when the version is already tagged.  The 'image' job then tags the image with that version and stamps 'org.opencontainers.image.version' from it.  Consequence, stated plainly:  a manual run of the workflow on a tree whose 'VERSION' is already tagged fails at validation, which is the rule working as intended.
 
 TAGS ARE BARE NUMERIC.  '0.0.12', not 'v0.0.12'.  Nothing in the repository matches on a 'v' prefix, and a tag glob written for one would silently match nothing.
 
@@ -915,7 +936,7 @@ python3 -m compileall -q app          every module parses
 python3 -c "import app.main"          the package imports, no circular imports
 ```
 
-Both are properties of the source.  Neither executes a pipeline stage, touches a file or opens a socket.  The CI workflow runs exactly these two as its 'validate' job, and the image job depends on it, so a syntactically broken tree cannot produce an image.
+Both are properties of the source.  Neither executes a pipeline stage, touches a file or opens a socket.  The CI workflow runs exactly these two as its 'validate' job, plus the version check from section 23, and the image job depends on it, so a syntactically broken tree cannot produce an image and neither can an unincremented one.
 
 FUNCTIONALITY IS VALIDATED AGAINST A BUILT CONTAINER, PER 'TESTPLAN.md'.  That plan measures outcome:  every case asserts on a file, a filename, a tag block, a track list, an API response, an exit code or a health state.  No case reads a log line and no case depends on a log level.  Every case is repeatable from a stated starting state.
 
@@ -947,7 +968,7 @@ Chosen deliberately over a per-show held decision.  The protection is the matchi
 
 ### No third-party Python dependencies
 
-Stated as a decision so it does not erode.  The standard library covers HTTP, SQLite, XML, threading and the web server.  Every dependency added is a supply chain, an upgrade treadmill and an audit burden on an image that otherwise consists of Debian packages and this repository.
+Stated as a decision so it does not erode.  The standard library covers HTTP, SQLite, XML, threading and the web server.  Every dependency added is a supply chain, an upgrade treadmill and an audit burden on an image that otherwise consists of Alpine packages and this repository.
 
 ### The web UI is unauthenticated, over HTTPS only
 

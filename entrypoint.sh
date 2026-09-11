@@ -48,4 +48,4 @@ fi
 
 echo "entrypoint: running as ${RUN_USER}:${PRIMARY_GROUP} (${PUID}:${PGID})"
 #----- Drop privileges and hand over
-exec gosu "${PUID}:${PGID}" "$@"
+exec su-exec "${PUID}:${PGID}" "$@"

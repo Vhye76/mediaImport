@@ -1,16 +1,12 @@
-FROM debian:trixie-slim
+FROM alpine:3.24
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     LIBVA_DRIVER_NAME=iHD
 
 #----- Base image and packages
 RUN set -eux; \
-    sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' \
-        /etc/apt/sources.list.d/debian.sources; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
+    apk add --no-cache \
         ffmpeg \
         mkvtoolnix \
         python3 \
@@ -20,15 +16,17 @@ RUN set -eux; \
         jq \
         ca-certificates \
         tini \
-        gosu \
-        libcap2-bin \
-        vainfo \
-        intel-media-va-driver-non-free \
-        libvpl2 \
-        libigdgmm12 \
-        intel-gpu-tools \
+        su-exec \
+        shadow \
+        libcap \
+        libcap-utils \
+        libva \
+        libva-utils \
+        intel-media-driver \
+        libvpl \
+        onevpl-intel-gpu \
     ; \
-    rm -rf /var/lib/apt/lists/*
+    ln -sf /sbin/nologin /usr/sbin/nologin
 
 #----- Build gate:  the image must not ship claiming encoders it lacks
 RUN set -eux; \
@@ -42,7 +40,7 @@ RUN set -eux; \
         echo "Do NOT delete this check. It exists so the image cannot ship claiming" >&2; \
         echo "encoders it does not have. Escalate the ffmpeg source instead:" >&2; \
         echo "  1. av1_vaapi   same hardware, VAAPI rather than oneVPL" >&2; \
-        echo "  2. jellyfin-ffmpeg from the Jellyfin apt repository" >&2; \
+        echo "  2. ffmpeg from the alpine edge community repository, pinned" >&2; \
         exit 1; \
     fi; \
     ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|av1_vaapi"; \
@@ -57,7 +55,7 @@ LABEL org.opencontainers.image.title="mediaimport" \
       org.opencontainers.image.description="Automatic media import, tag and encode pipeline" \
       org.opencontainers.image.source="https://github.com/Vhye76/mediaImport" \
       net.unraid.docker.icon="https://raw.githubusercontent.com/Vhye76/mediaImport/main/media/mediaImport.png" \
-      mediaimport.ffmpeg="debian"
+      mediaimport.ffmpeg="alpine"
 
 #----- Application
 WORKDIR /opt/mediaimport
@@ -81,5 +79,5 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
         || exit 1
 
 #----- Entry
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["python3", "-m", "app.main"]
