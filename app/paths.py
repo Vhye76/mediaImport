@@ -245,7 +245,7 @@ class Layout:
         base = os.path.basename(os.path.normpath(src))
         return self.unique_path(self.quarantine, base)
 
-    def copy_to_import(self, source):
+    def import_destination(self, source):
         source = _norm(source)
         if self.is_read_only(source) is None:
             raise WriteGuardError("refusing to import %s: it is not under a mounted library" % source)
@@ -260,6 +260,11 @@ class Layout:
         if os.path.exists(destination):
             raise FileExistsError("already present in import: %s" % destination)
         self.assert_writable(destination)
+        return destination
+
+    def copy_to_import(self, source):
+        source = _norm(source)
+        destination = self.import_destination(source)
         self.guarded_makedirs(self.imports)
         #----- the watcher ignores '.part', so the copy is invisible until the rename.
         staging = destination + ".part"

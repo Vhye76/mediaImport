@@ -180,6 +180,7 @@ class WebUI:
     def annotate_finding(self, finding):
         title_id = finding.get("imported_title_id")
         finding["in_pipeline"] = None
+        finding["copy"] = self.orchestrator.import_progress(finding["id"])
         if title_id:
             row = self.store.get(title_id)
             if row and row["stage"] not in state.TERMINAL + state.STOPPED:
@@ -188,6 +189,12 @@ class WebUI:
                     "stage": row["stage"],
                     "display_stage": state.display_name(row["stage"]),
                 }
+        elif finding.get("import_path") and os.path.exists(finding["import_path"]):
+            finding["in_pipeline"] = {
+                "id": None,
+                "stage": state.DETECTED,
+                "display_stage": "awaiting detection",
+            }
         finding["name"] = os.path.splitext(os.path.basename(finding["path"]))[0]
         return finding
 
@@ -268,6 +275,7 @@ class WebUI:
             )
 
         if action in ("keep", "retry"):
+            self.orchestrator.refresh_lookup(title_id)
             self.store.advance(title_id, state.DETECTED, "operator asked for a retry")
             self.orchestrator.queue.put(title_id)
             return {"ok": True, "action": "requeued"}

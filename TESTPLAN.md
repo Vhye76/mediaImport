@@ -210,6 +210,48 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 - **Do:**  identify Futurama: Into the Wild Green Yonder.
 - **Expect:**  year 2009, not 2008.  Published folder reads '(2009)'.
 
+**T-119  A library repair copy identifies from its origin folder.**
+
+- **Start:**  a movie finding whose library file carries no tag block and no segment title, and whose folder carries '[tmdbid-N] [imdbid-ttN]'.
+- **Do:**  press Import on the finding.
+- **Expect:**  resolved with no Wikidata search, detail reads "from origin folder ids", and the published folder carries the same two ids as the library folder.
+
+**T-120  A colon title resolves from its filename form.**
+
+- **Start:**  empty import, empty provider cache.
+- **Do:**  place 'Star Wars Episode IV A New Hope (1977).mkv' directly in 'import/', no tags, no segment title.
+- **Expect:**  resolved to tmdb 11, detail reads "from filename", and the debug log showing the two prefix searches empty and the 'text:' search scoring Q17738 at 1.000.
+
+**T-121  A remake resolves to the right year.**
+
+- **Start:**  empty import, empty provider cache.
+- **Do:**  place 'Robocop (2014).mkv', no tags.
+- **Expect:**  tmdb 97020, and an info line naming the 1987 entity as skipped for its year.
+
+**T-122  Retry asks the provider again.**
+
+- **Start:**  a title held for "could not be resolved" whose failing searches are in 'config/cache'.
+- **Do:**  correct the cause upstream, then press Retry.  Note the cache file mtimes for the search URLs first.
+- **Expect:**  an info line saying identification bypasses the provider cache, the search cache files rewritten, and the title resolving.  A second title held the same way and requeued by any path other than Retry keeps its cached answers.
+
+**T-123  A show resolves with both ids.**
+
+- **Start:**  empty import, empty provider cache.
+- **Do:**  place 'Murder, She Wrote - S06E17 - Murder - According to Maggie.mkv' directly in 'import/', no tags.
+- **Expect:**  tvdb 78049 and tmdb 484 on '/api/titles/<id>', the published folder reading '[tvdbid-78049] [tmdbid-484]', never '[tmdbid-None]'.
+
+**T-124  A library repair copy of an episode identifies from its origin folders.**
+
+- **Start:**  a TV finding whose library show folder carries '[tvdbid-N] [tmdbid-N]'.
+- **Do:**  press Import.
+- **Expect:**  detail reads "from origin folder ids", no Wikidata search in the debug log, and both ids on the row.
+
+**T-125  A special matches by title.**
+
+- **Start:**  empty import, empty provider cache.
+- **Do:**  place 'Murder, She Wrote - S00E02 - South by Southwest.mkv'.
+- **Expect:**  'match_method' exact on the identity, season 0 episode 2, no fallback-numbering warning in the log.
+
 **T-83  DRY_RUN completes a title.**
 
 - **Start:**  'DRY_RUN=1', a resolvable file in import.
@@ -395,6 +437,9 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-105  The copy refuses a full root.**  With the root near full, import a finding.  Expect a refusal before any bytes move and no '.part' file left behind.
 - **T-106  The audit never starts without a library.**  Unset both library variables.  Expect no auditor thread, no counter on the dashboard, and 'audit.enabled' false on '/api/status'.
 - **T-107  The dashboard renders the audit.**  Expect a third corner counter, the list dialog with the sweep status in its header, a Details table per finding with the differing rows marked, and an Import button that becomes an in-pipeline link once pressed.
+- **T-116  The copy returns at once and reports progress.**  Import a finding of several GiB.  Expect 'POST /api/audit/<id>/import' to return within a second with 'copy started', the Import button greyed out, a bar beneath the buttons that advances while the '.part' in 'import/' grows, and 'copy.percent' on 'GET /api/audit' climbing to match.
+- **T-117  The row reads In Pipeline through the detection gap.**  When the copy from T-116 completes, expect the button to read 'In Pipeline' and be disabled before the watcher has detected the file, then 'In Pipeline' and clickable to the title's detail dialog once detected, with '#N' and the stage name absent from the label.  After the title publishes and its source retires, expect the row to offer Import again.
+- **T-118  A failed copy is reported and retryable.**  Start a copy and fill the root or unmount the library while it runs.  Expect no '.part' left in 'import/', the finding row showing the failure text and an enabled Import button, and a second Import to start a fresh copy.
 
 ## 13.  Web
 

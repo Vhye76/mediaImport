@@ -268,6 +268,29 @@ def movie_identity(path):
 
 
 #----- The readiness gate
+def show_identity(path):
+    try:
+        root = read_tags(path)
+    except (TagError, OSError):
+        return None
+    if root is None:
+        return None
+    for tag in root.findall("Tag"):
+        if _target_type(tag) != COLLECTION:
+            continue
+        simples = _simples(tag)
+        found = {
+            "title": (simples.get("TITLE") or "").strip() or None,
+            "tvdb": (simples.get("TVDB") or "").strip() or None,
+            "tmdb": (simples.get("TMDB") or "").strip() or None,
+        }
+        if any(found.values()):
+            log.info("read identity from the embedded COLLECTION tag block")
+            log.debug("embedded show identity: %s", found)
+            return found
+    return None
+
+
 def check_movie(path, expected_title, required=CANONICAL_MOVIE):
     problems = []
     root = read_tags(path)

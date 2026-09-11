@@ -1,9 +1,11 @@
+import difflib
 import hashlib
 import html
 import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -19,11 +21,14 @@ log = logging.getLogger("provider")
 USER_AGENT = "mediaimport/%s (+https://github.com/Vhye76/mediaImport)" % VERSION
 THROTTLE_SECONDS = 3.0
 TIMEOUT = 30
+TITLE_CUTOFF = episodemod.FUZZY_CUTOFF
+CONTAINED_SCORE = 0.9
+TEXT_SEARCH_LIMIT = 10
 
 P_TMDB = "P4947"
 P_IMDB = "P345"
 P_TVDB = "P4835"
-P_TVDB_SERIES = "P4983"
+P_TMDB_TV = "P4983"
 P_RELEASE = "P577"
 P_START = "P580"
 
@@ -44,9 +49,14 @@ OG_IMAGE = re.compile(
 TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
 TVDB_SERIES = "https://thetvdb.com/series/%s"
 TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
+TVDB_SPECIALS = "https://thetvdb.com/series/%s/seasons/%s/0"
 
 EPISODE_LABEL = re.compile(
     r'episode-label">S(\d{1,2})E(\d{1,3})</span>.*?<a[^>]*>\s*(.*?)\s*</a>',
+    re.I | re.S,
+)
+SPECIAL_ROW = re.compile(
+    r"<td>\s*S(\d{1,2})E(\d{1,3})\s*</td>\s*<td>\s*<a[^>]*>\s*(.*?)\s*</a>",
     re.I | re.S,
 )
 
@@ -65,7 +75,26 @@ class Client:
         self.cache_dir = str(cache_dir)
         self.throttle = throttle
         self._last = 0.0
+        self._local = threading.local()
         os.makedirs(self.cache_dir, exist_ok=True)
+
+    class _Fresh:
+        def __init__(self, client):
+            self.client = client
+
+        def __enter__(self):
+            self.client._local.fresh = True
+            return self
+
+        def __exit__(self, *exc):
+            self.client._local.fresh = False
+            return False
+
+    def fresh(self):
+        return Client._Fresh(self)
+
+    def _bypassing(self):
+        return bool(getattr(self._local, "fresh", False))
 
     def _cache_path(self, url):
         return os.path.join(self.cache_dir, hashlib.sha256(url.encode()).hexdigest() + ".json")
@@ -95,7 +124,7 @@ class Client:
         self._last = time.time()
 
     def fetch(self, url, use_cache=True):
-        if use_cache:
+        if use_cache and not self._bypassing():
             cached = self._cache_get(url)
             if cached is not None:
                 log.debug("cache hit for %s", url)
@@ -217,14 +246,54 @@ class Provider:
         )
         return self.client.fetch_json(url).get("search") or []
 
+    def search_text(self, term, limit=TEXT_SEARCH_LIMIT):
+        url = "%s?%s" % (
+            WIKIDATA_API,
+            urllib.parse.urlencode(
+                {
+                    "action": "query",
+                    "list": "search",
+                    "srsearch": term,
+                    "srlimit": limit,
+                    "format": "json",
+                }
+            ),
+        )
+        hits = (self.client.fetch_json(url).get("query") or {}).get("search") or []
+        return [h["title"] for h in hits if str(h.get("title", "")).startswith("Q")]
+
+    def labels(self, qids):
+        if not qids:
+            return []
+        url = "%s?%s" % (
+            WIKIDATA_API,
+            urllib.parse.urlencode(
+                {
+                    "action": "wbgetentities",
+                    "ids": "|".join(qids),
+                    "props": "labels|aliases",
+                    "languages": "en",
+                    "format": "json",
+                }
+            ),
+        )
+        entities = self.client.fetch_json(url).get("entities") or {}
+        out = []
+        for qid in qids:
+            entity = entities.get(qid) or {}
+            label = ((entity.get("labels") or {}).get("en") or {}).get("value")
+            aliases = [a.get("value") for a in (entity.get("aliases") or {}).get("en") or []]
+            out.append({"id": qid, "label": label, "aliases": [a for a in aliases if a]})
+        return out
+
     def entity(self, qid):
         data = self.client.fetch_json(WIKIDATA_ENTITY % qid)
         return (data.get("entities") or {}).get(qid) or {}
 
-    def ids_from_entity(self, entity):
-        tmdb = _claims(entity, P_TMDB)
+    def ids_from_entity(self, entity, kind="movie"):
+        tmdb = _claims(entity, P_TMDB if kind == "movie" else P_TMDB_TV)
         imdb = _claims(entity, P_IMDB)
-        tvdb = _claims(entity, P_TVDB) or _claims(entity, P_TVDB_SERIES)
+        tvdb = _claims(entity, P_TVDB)
         released = _best_date(entity, P_RELEASE) or _best_date(entity, P_START)
         return {
             "tmdb": tmdb[0] if tmdb else None,
@@ -239,6 +308,23 @@ class Provider:
         if status != 200:
             return False
         needle = re.sub(r"[^a-z0-9]+", "", title.lower())
+        haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
+        return needle in haystack
+
+    def verify_tvdb(self, tvdb_id, name):
+        try:
+            status, body = self.client.fetch(TVDB_SERIES % self.series_slug(tvdb_id))
+        except urllib.error.HTTPError as exc:
+            log.info("tvdb %s does not dereference: HTTP %s", tvdb_id, exc.code)
+            return False
+        except urllib.error.URLError as exc:
+            raise ProviderError("could not reach thetvdb for %s: %s" % (tvdb_id, exc))
+        except ProviderError as exc:
+            log.info("tvdb %s does not lead to a series page: %s", tvdb_id, exc)
+            return False
+        if status != 200:
+            return False
+        needle = re.sub(r"[^a-z0-9]+", "", name.lower())
         haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
         return needle in haystack
 
@@ -279,9 +365,10 @@ class Provider:
         return url
 
     #----- The movie identity ladder
-    def movie_candidates(self, source, container):
+    def movie_candidates(self, source, container, origin=None):
         stem = os.path.splitext(os.path.basename(source))[0]
         parent = os.path.basename(os.path.dirname(source))
+        origin_parent = os.path.basename(os.path.dirname(origin)) if origin else ""
         rungs = []
 
         embedded = tagsmod.movie_identity(source)
@@ -293,7 +380,10 @@ class Provider:
                 embedded.get("year"),
             ))
 
-        for label, name in (("filename ids", stem), ("folder ids", parent)):
+        for label, name in (("filename ids", stem), ("folder ids", parent),
+                            ("origin folder ids", origin_parent)):
+            if not name:
+                continue
             ids = titles.ids_from_name(name)
             if ids["tmdb"] and ids["imdb"]:
                 rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
@@ -317,8 +407,8 @@ class Provider:
         log.debug("identity ladder: %s", [r[0] for r in rungs])
         return rungs
 
-    def identify_movie(self, source, container):
-        for rung, ids, title, year in self.movie_candidates(source, container):
+    def identify_movie(self, source, container, origin=None):
+        for rung, ids, title, year in self.movie_candidates(source, container, origin):
             resolved = self.accept_candidate(rung, ids, title, year)
             if resolved is not None:
                 log.info(
@@ -355,46 +445,181 @@ class Provider:
             resolved["identified_from"] = rung
         return resolved
 
-    #----- Wikidata search paths
-    def resolve_movie(self, title, year=None):
-        term = "%s (%s film)" % (title, year) if year else "%s (film)" % title
-        for candidate in self.search_entities(term) or self.search_entities(title):
-            entity = self.entity(candidate["id"])
-            ids = self.ids_from_entity(entity)
-            if not ids["tmdb"] or not ids["imdb"]:
+    #----- The show identity ladder
+    def show_candidates(self, source, origin=None):
+        stem = os.path.splitext(os.path.basename(source))[0]
+        parent = os.path.basename(os.path.dirname(source))
+        grandparent = os.path.basename(os.path.dirname(os.path.dirname(source)))
+        rungs = []
+
+        embedded = tagsmod.show_identity(source)
+        if embedded:
+            rungs.append((
+                "embedded tag",
+                {"tvdb": embedded.get("tvdb"), "tmdb": embedded.get("tmdb")},
+                embedded.get("title"),
+                None,
+            ))
+
+        folders = [("folder ids", parent), ("folder ids", grandparent)]
+        if origin:
+            origin_dir = os.path.dirname(origin)
+            folders.append(("origin folder ids", os.path.basename(origin_dir)))
+            folders.append(("origin folder ids", os.path.basename(os.path.dirname(origin_dir))))
+        for label, name in folders:
+            if not name:
                 continue
-            if not self.verify_tmdb("movie", ids["tmdb"], title):
-                log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], title)
-                continue
-            label = ((entity.get("labels") or {}).get("en") or {}).get("value") or title
-            return {
-                "title": label,
-                "year": ids["year"] or year,
-                "tmdb": ids["tmdb"],
-                "imdb": ids["imdb"],
-                "qid": candidate["id"],
-            }
+            ids = titles.ids_from_name(name)
+            if ids["tvdb"]:
+                rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
+
+        guess = _clean_show_name(stem, parent)
+        if guess:
+            rungs.append(("filename", {}, guess, _show_year(stem, parent)))
+
+        log.debug("show identity ladder: %s", [r[0] for r in rungs])
+        return rungs
+
+    def identify_show(self, source, origin=None):
+        for rung, ids, name, year in self.show_candidates(source, origin):
+            resolved = self.accept_show_candidate(rung, ids, name, year)
+            if resolved is not None:
+                log.info(
+                    "identified show from %s: %s (%s) tvdb=%s tmdb=%s",
+                    rung, resolved.get("show"), resolved.get("show_year"),
+                    resolved.get("tvdb"), resolved.get("tmdb"),
+                )
+                return resolved
+            log.debug("rung %s did not resolve", rung)
         return None
 
-    def resolve_show(self, name, year=None):
-        for term in ("%s (TV series)" % name, name):
-            for candidate in self.search_entities(term):
-                entity = self.entity(candidate["id"])
-                ids = self.ids_from_entity(entity)
-                if not ids["tvdb"]:
-                    continue
-                if ids["tmdb"] and not self.verify_tmdb("tv", ids["tmdb"], name):
-                    log.info("tmdb %s did not confirm show %r", ids["tmdb"], name)
-                    continue
-                label = ((entity.get("labels") or {}).get("en") or {}).get("value") or name
-                return {
-                    "show": label,
-                    "show_year": ids["year"] or year,
-                    "tvdb": ids["tvdb"],
-                    "tmdb": ids["tmdb"],
-                    "qid": candidate["id"],
-                }
+    def accept_show_candidate(self, rung, ids, name, year):
+        tvdb = (ids or {}).get("tvdb")
+        tmdb = (ids or {}).get("tmdb")
+        if not name:
+            return None
+        if tvdb:
+            if not self.verify_tvdb(tvdb, name):
+                log.info(
+                    "%s carried tvdb %s but the TVDB page does not confirm %r, rejected",
+                    rung, tvdb, name,
+                )
+                return None
+            if tmdb and not self.verify_tmdb("tv", tmdb, name):
+                log.info("%s carried tmdb %s but the TMDB page does not confirm %r, dropped", rung, tmdb, name)
+                tmdb = None
+            return {
+                "show": name,
+                "show_year": year,
+                "tvdb": tvdb,
+                "tmdb": tmdb,
+                "qid": None,
+                "identified_from": rung,
+            }
+        resolved = self.resolve_show(name, year)
+        if resolved is not None:
+            resolved["identified_from"] = rung
+        return resolved
+
+    #----- Wikidata search paths
+    def resolve_movie(self, title, year=None):
+        return self._resolve_by_search(
+            title, year, _movie_search_terms(title, year), self._accept_search_hit,
+        )
+
+    def _resolve_by_search(self, title, year, terms, accept):
+        wanted = titles.normalise_for_match(title)
+        seen = set()
+        for term in terms:
+            resolved = self._resolve_from(
+                term, self.search_entities(term), title, wanted, year, seen, accept, cutoff=0.0,
+            )
+            if resolved is not None:
+                return resolved
+        qids = [q for q in self.search_text(title) if q not in seen]
+        if not qids:
+            return None
+        return self._resolve_from(
+            "text:%s" % title, self.labels(qids), title, wanted, year, seen, accept,
+            cutoff=TITLE_CUTOFF,
+        )
+
+    def _resolve_from(self, term, candidates, title, wanted, year, seen, accept, cutoff):
+        scored = []
+        for candidate in candidates:
+            if candidate["id"] in seen:
+                continue
+            seen.add(candidate["id"])
+            score = _candidate_score(title, wanted, candidate)
+            log.debug(
+                "search %r: %s %r scored %.3f", term, candidate["id"],
+                candidate.get("label"), score,
+            )
+            if score < cutoff:
+                continue
+            scored.append((score, candidate))
+        for score, candidate in sorted(scored, key=lambda pair: -pair[0]):
+            resolved = accept(candidate, title, year)
+            if resolved is None:
+                continue
+            if score < 1.0:
+                log.info(
+                    "title %r matched %r by similarity %.3f on search %r",
+                    title, resolved.get("title") or resolved.get("show"), score, term,
+                )
+            return resolved
         return None
+
+    def _accept_search_hit(self, candidate, title, year):
+        entity = self.entity(candidate["id"])
+        ids = self.ids_from_entity(entity)
+        if not ids["tmdb"] or not ids["imdb"]:
+            return None
+        if year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
+            log.info(
+                "%s %r is a %s release, not %s, skipping",
+                candidate["id"], candidate.get("label"), ids["year"], year,
+            )
+            return None
+        if not self.verify_tmdb("movie", ids["tmdb"], title):
+            log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], title)
+            return None
+        label = ((entity.get("labels") or {}).get("en") or {}).get("value") or title
+        return {
+            "title": label,
+            "year": ids["year"] or year,
+            "tmdb": ids["tmdb"],
+            "imdb": ids["imdb"],
+            "qid": candidate["id"],
+        }
+
+    def resolve_show(self, name, year=None):
+        return self._resolve_by_search(
+            name, year, ("%s (TV series)" % name, name), self._accept_show_hit,
+        )
+
+    def _accept_show_hit(self, candidate, name, year):
+        entity = self.entity(candidate["id"])
+        ids = self.ids_from_entity(entity, kind="tv")
+        if not ids["tvdb"]:
+            return None
+        if year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
+            log.info(
+                "%s %r started in %s, not %s, skipping",
+                candidate["id"], candidate.get("label"), ids["year"], year,
+            )
+            return None
+        if ids["tmdb"] and not self.verify_tmdb("tv", ids["tmdb"], name):
+            log.info("tmdb %s did not confirm show %r", ids["tmdb"], name)
+            return None
+        label = ((entity.get("labels") or {}).get("en") or {}).get("value") or name
+        return {
+            "show": label,
+            "show_year": ids["year"] or year,
+            "tvdb": ids["tvdb"],
+            "tmdb": ids["tmdb"],
+            "qid": candidate["id"],
+        }
 
     #----- Television catalogue
     def series_slug(self, tvdb_id):
@@ -408,15 +633,14 @@ class Provider:
         status, body = self.client.fetch(TVDB_SEASONS % (slug, order))
         if status != 200:
             return []
-        found = []
-        for season, episode, title in EPISODE_LABEL.findall(body):
-            found.append(
-                {
-                    "season": int(season),
-                    "episode": int(episode),
-                    "title": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
-                }
-            )
+        found = _catalogue_entries(EPISODE_LABEL.findall(body))
+        if not any(e["season"] == 0 for e in found):
+            status, body = self.client.fetch(TVDB_SPECIALS % (slug, order))
+            if status == 200:
+                specials = _catalogue_entries(SPECIAL_ROW.findall(body))
+                if specials:
+                    log.debug("%s %s: %d special(s) from the season 0 page", slug, order, len(specials))
+                found.extend(specials)
         return found
 
     def all_orders(self, slug):
@@ -429,12 +653,10 @@ class Provider:
 
     def identify(self, row, container, kind):
         source = row["source_path"]
-        name = os.path.splitext(os.path.basename(source))[0]
         if kind == "movie":
-            return self.identify_movie(source, container)
+            return self.identify_movie(source, container, row.get("origin_path"))
 
-        show_guess = _clean_show_name(name, os.path.basename(os.path.dirname(source)))
-        resolved = self.resolve_show(show_guess)
+        resolved = self.identify_show(source, row.get("origin_path"))
         if resolved is None:
             return None
 
@@ -470,6 +692,7 @@ class Provider:
             "match_method": how,
             "match_score": score,
             "order_warnings": warnings,
+            "identified_from": resolved.get("identified_from"),
         }
 
     def _order_warning(self, slug, aired):
@@ -503,6 +726,48 @@ JUNK = re.compile(
 
 
 #----- Name cleaning
+def _catalogue_entries(rows):
+    return [
+        {
+            "season": int(season),
+            "episode": int(episode),
+            "title": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
+        }
+        for season, episode, title in rows
+    ]
+
+
+#----- Title matching under the section 9 rules
+def _movie_search_terms(title, year):
+    terms = []
+    if year:
+        terms.append("%s (%s film)" % (title, year))
+    terms.append(title)
+    return terms
+
+
+def _name_score(title, wanted, name):
+    if titles.matches(name, title):
+        return 1.0
+    other = titles.normalise_for_match(name)
+    if not other or not wanted:
+        return 0.0
+    if other == wanted:
+        return 1.0
+    if " %s " % wanted in " %s " % other:
+        return CONTAINED_SCORE
+    return difflib.SequenceMatcher(None, wanted, other).ratio()
+
+
+def _candidate_score(title, wanted, candidate):
+    names = [candidate.get("label")]
+    names.extend(candidate.get("aliases") or [])
+    match = candidate.get("match") or {}
+    if match.get("text"):
+        names.append(match["text"])
+    return max((_name_score(title, wanted, n) for n in names if n), default=0.0)
+
+
 def _clean_movie_name(name):
     year = None
     matches = list(YEAR_IN_NAME.finditer(name))
@@ -514,6 +779,14 @@ def _clean_movie_name(name):
     name = JUNK.sub(" ", name)
     name = re.sub(r"[-\[\(].*$", "", name)
     return re.sub(r"\s+", " ", name).strip(), year
+
+
+def _show_year(name, parent):
+    for candidate in (name, parent):
+        found = titles.YEAR_IN_PARENS.findall(candidate or "")
+        if found:
+            return int(found[-1])
+    return None
 
 
 def _clean_show_name(name, parent):

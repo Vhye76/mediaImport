@@ -148,6 +148,8 @@
   .lst .row .btns { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap;
                     justify-content: flex-end; }
   .lst .row .btns button { white-space: nowrap; }
+  .lst .row .side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: stretch; }
+  .lst .row .side .s { font-size: 11px; color: var(--dim); margin-top: 2px; text-align: right; }
   #lst-acts { padding: 10px 16px; border-bottom: 1px solid var(--line);
               display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #lst-acts .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase;
@@ -547,15 +549,48 @@ function when(ts) {
 }
 
 let FINDINGS = {};
+let AUDIT_TIMER = null;
+let AUDIT_SIG = null;
 
-async function showAudit() {
+$("lst").addEventListener("close", () => {
+  if (AUDIT_TIMER) { clearInterval(AUDIT_TIMER); AUDIT_TIMER = null; }
+  AUDIT_SIG = null;
+});
+
+function findingSide(f) {
+  const copy = f.copy || {};
+  const copying = !!copy.copying;
+  let action;
+  if (f.in_pipeline) {
+    action = f.in_pipeline.id != null
+      ? `<button onclick="$('lst').close();showDetail(${f.in_pipeline.id})">In Pipeline</button>`
+      : `<button disabled>In Pipeline</button>`;
+  } else {
+    action = `<button onclick="importFinding(${f.id})"${copying ? " disabled" : ""}>Import</button>`;
+  }
+  let progress = "";
+  if (copying) {
+    const pct = copy.percent == null ? null : Math.max(0, Math.min(100, copy.percent));
+    progress = pct == null
+      ? `<div class="s">copying</div>`
+      : `<div class="bar"><i style="width:${pct}%"></i></div><div class="s">copying ${esc(pct.toFixed(1))}%</div>`;
+  }
+  return `<div class="side">
+      <div class="btns">
+        <button onclick="$('lst').close();showFinding(${f.id})">Details</button>
+        ${action}
+      </div>${progress}
+    </div>`;
+}
+
+async function renderAudit() {
   let a;
   try { a = await (await fetch("/api/audit")).json(); } catch (e) { return; }
+  if (LIST_KIND !== "AUDIT") return;
   const st = a.status || {};
   const rows = a.findings || [];
   FINDINGS = {};
   rows.forEach(f => { FINDINGS[f.id] = f; });
-  LIST_KIND = "AUDIT"; LIST_IDS = [];
 
   $("lst-h").textContent = "Library findings - " + rows.length;
   const bits = [];
@@ -567,23 +602,26 @@ async function showAudit() {
      <button onclick="sweepNow()">Sweep now</button>`;
   $("lst-acts").style.display = "";
 
-  $("lst-body").innerHTML = rows.length === 0
+  const html = rows.length === 0
     ? '<div class="empty" style="padding:16px">Every audited file meets the standard.</div>'
     : rows.map(f => `<div class="row">
         <div>
           <div class="nm">${esc(f.name)}</div>
           <div style="font-size:12px;color:var(--dim)">${esc(f.path)}</div>
           <div class="why">${esc(f.summary || "")}</div>
+          ${f.copy && f.copy.error && !f.in_pipeline ? `<div class="why">copy failed: ${esc(f.copy.error)}</div>` : ""}
           <div style="font-size:12px;color:var(--dim)">${gb(f.measured.size_bytes || 0)}</div>
         </div>
-        <div class="btns">
-          <button onclick="$('lst').close();showFinding(${f.id})">Details</button>
-          ${f.in_pipeline
-            ? `<button onclick="$('lst').close();showDetail(${f.in_pipeline.id})">in pipeline: #${f.in_pipeline.id} ${esc(f.in_pipeline.display_stage)}</button>`
-            : `<button onclick="importFinding(${f.id})">Import to import/</button>`}
-        </div>
+        ${findingSide(f)}
       </div>`).join("");
-  $("lst").showModal();
+  if (AUDIT_SIG !== html) { AUDIT_SIG = html; $("lst-body").innerHTML = html; }
+}
+
+async function showAudit() {
+  LIST_KIND = "AUDIT"; LIST_IDS = [];
+  await renderAudit();
+  if (!$("lst").open) $("lst").showModal();
+  if (!AUDIT_TIMER) AUDIT_TIMER = setInterval(renderAudit, 2000);
 }
 
 async function showFinding(id) {
@@ -618,13 +656,13 @@ async function importFinding(id) {
       headers: {"Content-Type": "application/json"}, body: "{}"})).json();
   } catch (e) { return; }
   if (r.error) alert(r.error);
-  showAudit();
+  renderAudit();
 }
 
 async function sweepNow() {
   try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
   catch (e) {}
-  showAudit();
+  renderAudit();
 }
 
 //----- Operator actions

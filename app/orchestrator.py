@@ -121,6 +121,9 @@ class Orchestrator:
         self._procs = set()
         self._procs_lock = threading.Lock()
         self._progress = {}
+        self._imports = {}
+        self._imports_lock = threading.Lock()
+        self._fresh_lookups = set()
         self.auditor = audit.Auditor(cfg, layout, store, self.stop_event)
 
     #----- Lifecycle
@@ -446,13 +449,20 @@ class Orchestrator:
         if self.provider is None:
             problem = "no provider configured, cannot resolve a provider ID"
         else:
+            fresh = title_id in self._fresh_lookups
             try:
-                identity = self.provider.identify(row, container, kind)
+                if fresh:
+                    log.info("title %s identification bypasses the provider cache", title_id)
+                    with self.provider.client.fresh():
+                        identity = self.provider.identify(row, container, kind)
+                else:
+                    identity = self.provider.identify(row, container, kind)
             except providermod.RateLimited as exc:
                 raise RetryLater(str(exc))
             except providermod.ProviderError as exc:
                 raise RetryLater("provider lookup failed: %s" % exc)
             problem = "provider ID could not be resolved and must never be guessed"
+            self._fresh_lookups.discard(title_id)
         if identity is None:
             if row.get("overridden"):
                 identity = self._unidentified(kind, source)
@@ -1074,6 +1084,9 @@ class Orchestrator:
         return "quarantined"
 
     #----- Library repair
+    def refresh_lookup(self, title_id):
+        self._fresh_lookups.add(title_id)
+
     def import_finding(self, finding_id):
         finding = self.store.finding(finding_id)
         if finding is None:
@@ -1085,18 +1098,60 @@ class Orchestrator:
                     "already in the pipeline as title %d at %s"
                     % (row["id"], row["stage"])
                 )
+        with self._imports_lock:
+            record = self._imports.get(finding_id)
+            if record and not record["done"] and record["error"] is None:
+                raise ValueError("copy already running for finding %d" % finding_id)
         if self.cfg.dry_run:
             log.info("DRY RUN would copy %s into import for repair", finding["path"])
             return {"ok": True, "action": "dry run", "path": finding["path"]}
         try:
-            destination = self.layout.copy_to_import(finding["path"])
-        except FileExistsError as exc:
-            raise ValueError(str(exc))
+            destination = self.layout.import_destination(finding["path"])
+            total = os.path.getsize(finding["path"])
         except OSError as exc:
             raise ValueError(str(exc))
+        with self._imports_lock:
+            self._imports[finding_id] = {
+                "destination": destination,
+                "total": total,
+                "started_at": time.time(),
+                "error": None,
+                "done": False,
+            }
+        threading.Thread(
+            target=self._copy_finding, args=(finding_id, finding["path"]),
+            name="import-%d" % finding_id, daemon=True,
+        ).start()
+        log.info("finding %d copy started, %s -> %s", finding_id, finding["path"], destination)
+        return {"ok": True, "action": "copy started", "path": destination}
+
+    def _copy_finding(self, finding_id, source):
+        try:
+            destination = self.layout.copy_to_import(source)
+        except Exception as exc:
+            log.warning("finding %d copy failed: %s", finding_id, exc)
+            with self._imports_lock:
+                self._imports[finding_id]["error"] = str(exc)
+            return
         self.store.finding_mark_import(finding_id, destination)
+        with self._imports_lock:
+            self._imports[finding_id]["done"] = True
         log.info("finding %d queued for repair, copied to %s", finding_id, destination)
-        return {"ok": True, "action": "copied to import", "path": destination}
+
+    def import_progress(self, finding_id):
+        with self._imports_lock:
+            record = self._imports.get(finding_id)
+            if record is None:
+                return None
+            record = dict(record)
+        copying = not record["done"] and record["error"] is None
+        percent = None
+        if copying and record["total"]:
+            try:
+                percent = 100.0 * os.path.getsize(record["destination"] + ".part") / record["total"]
+            except OSError:
+                percent = None
+        return {"copying": copying, "percent": percent, "error": record["error"]}
 
     #----- Reporting
     def status(self):
