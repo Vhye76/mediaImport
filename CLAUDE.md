@@ -955,7 +955,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.3.0.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.4.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals an existing tag is a build that cannot be told apart from the one before it, on the provider User-Agent, on the image label, or in a bug report.  The workflow's 'validate' job enforces it:  it reads 'VERSION' from 'app/__init__.py', fetches the tags, and fails when the version is already tagged.  The 'image' job then tags the image with that version and stamps 'org.opencontainers.image.version' from it.  Consequence, stated plainly:  a manual run of the workflow on a tree whose 'VERSION' is already tagged fails at validation, which is the rule working as intended.
 
@@ -1049,7 +1049,9 @@ audio default count not exactly 1         flag repair
 non-forced subtitle marked default        flag repair
 video track language not eng              flag repair
 tag block missing, inverted or flattened  tag rewrite
-tag TITLE does not transform to the name  tag rewrite
+folder and file names differ from the     republish through the pipeline
+  names the tag block would produce
+a path component breaks a section 9 rule  republish through the pipeline
 segment title differs from the tag TITLE  mkvpropedit
 statistics missing or stale               statistics refresh
 HDR declaration short of the bitstream    mkvpropedit, section 12
@@ -1057,7 +1059,17 @@ HDR declaration short of the bitstream    mkvpropedit, section 12
 
 Resolution, bit depth, codec, letterbox and PAL speed-up are never findings.  They need an encode, and an encode of already-encoded media is the loss gate 1 exists to prevent.
 
-THE NAMING CHECK NEEDS NO PROVIDER.  Section 9's rule is that the filename is the tag's TITLE run through 'titles.to_filename', so the audit applies the transform to the tag and compares it with the name.  It cannot check the reverse and does not try.
+THE NAMING CHECK NEEDS NO PROVIDER.  Section 9's rule is that every name is derived from the tag block, so the audit builds the names the pipeline would publish, through the same 'titles.movie_folder', 'movie_filename', 'show_folder', 'season_folder' and 'episode_filename' the publish step uses, and compares them with what is on disk:  the containing folder and the file for a movie, the show folder, the season folder and the file for an episode.  It cannot check the reverse and does not try:  a tag that is itself wrong, and a folder and file that agree with it, pass.  That is only caught when the file goes through the pipeline and rung 1's verification rewrites the identity.
+
+UNTIL 2026-09-11 ONLY THE FILE'S TITLE PORTION WAS CHECKED.  The folder was never read, so a folder that predates the section 9 transform, 'Star Wars Episode VI Return of the Jedi (1983) [...]' beside a tag carrying the en dash, or a show folder written '[tmdbid-None]' by the 0.2.0 provider defect in section 11, passed.  Measured that day:  the two Star Wars entries with no tag block were flagged;  the third, with a folder in the old form, was not.  The rows now compare whole names, so the year, the ids and the season padding are covered as well as the title.
+
+Three consequences, stated because they shape what the findings list looks like:
+
+- A NAMING ROW NEEDS A COMPLETE TAG BLOCK.  A block missing any field the name needs reports 'tag incomplete' once per row and compares nothing;  the 'tag structure' row already carries that finding, and a missing block must not fan out into four more.  A show whose COLLECTION block holds no TMDB is incomplete by this rule, which is what the 0.2.0 outputs look like.
+- FINDINGS ARE PER FILE.  A wrong show folder is one finding on every episode in it;  there is no folder-level record.
+- THE SHOW FOLDER'S YEAR COMES FROM THE FOLDER.  The COLLECTION block carries no year, so the expected show folder is built with the year parsed out of the actual one, 'YYYY' when it has none, and the row checks everything else.
+
+Repairing a naming finding is the same Import as any other:  rung 1 of the identity ladder reads the embedded block, verifies it, and the published folder and file are regenerated from it.  For a folder-only defect that copies every file in the folder through the pipeline;  renaming the folder by hand is the cheaper route and remains the operator's, per section 2.
 
 IT IS THROTTLED AND IT SKIPS WHAT HAS NOT CHANGED.  'AUDIT_INTERVAL' seconds between files, default 2, so a first pass over 2934 files takes about two hours and never competes with a staging copy for the array.  A 'findings' table in 'state.db' records path, size and mtime for every file assessed, so a repeat pass is mostly 'stat' calls.  A pass restarts 'AUDIT_SWEEP_INTERVAL' seconds after the last one finished, default 3600.  'AUDIT_INTERVAL=0' disables it, and it never starts when no library is mounted.
 
@@ -1087,7 +1099,7 @@ Open items, all deferred by the developer.  Remove an entry when it is done or d
 
 - **AV1 calibration.**  Section 14 records 'av1_qsv' at 'global_quality 26' and 'libsvtav1' at 'crf 24' as starting points with no calibration behind them.  The first AV1 batch ran 2026-09-10.  Score the outputs against their sources with the 'ssim' filter, per section 14;  bitrate alone settles nothing.
 - **'X265_DV_VBV_KBPS'.**  The known issue in section 14.  Settle it with one full-length 1080p DV encode and one UHD, reading the x265 log for VBV adjustments and comparing the bitrate curve against an uncapped CRF 18 encode.  Inert under gate 1 until then.
-- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), the last two groups written 2026-09-11.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
+- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), the last three groups written 2026-09-11.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
 - **Review the library audit's first pass.**  Expected findings on the current library:  the three titles under-declaring ST 2086 and Forrest Gump's missing CLL, per section 12.  Anything else it reports is either a real defect or a check that needs correcting, and the edition false positive fixed on 2026-09-10 is the reference for the second kind.
 - **The grain probe against the 9,697k reference.**  Section 14's grain-heavy 35mm title encoded at 'aq-mode=3' before automatic detection existed.  Run the probe on that source and confirm the ratio clears 'GRAIN_THRESHOLD', so the tune that separated the nine-film batch is what an automatic run would choose.
 - **Hardware decode on the QSV path.**  'build_command' decodes in software and uploads with 'hwupload';  on the A310 the media engine sat at 47 percent with the decode block near idle.  '-hwaccel qsv -hwaccel_output_format qsv' ahead of '-i' keeps frames on the device.  Needs a measurement and a software fallback for sources the hardware decoder does not accept.  Not planned;  noted as the next lever on the GPU path.

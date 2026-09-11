@@ -440,6 +440,13 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-116  The copy returns at once and reports progress.**  Import a finding of several GiB.  Expect 'POST /api/audit/<id>/import' to return within a second with 'copy started', the Import button greyed out, a bar beneath the buttons that advances while the '.part' in 'import/' grows, and 'copy.percent' on 'GET /api/audit' climbing to match.
 - **T-117  The row reads In Pipeline through the detection gap.**  When the copy from T-116 completes, expect the button to read 'In Pipeline' and be disabled before the watcher has detected the file, then 'In Pipeline' and clickable to the title's detail dialog once detected, with '#N' and the stage name absent from the label.  After the title publishes and its source retires, expect the row to offer Import again.
 - **T-118  A failed copy is reported and retryable.**  Start a copy and fill the root or unmount the library while it runs.  Expect no '.part' left in 'import/', the finding row showing the failure text and an enabled Import button, and a second Import to start a fresh copy.
+- **T-126  A folder without the transform's dash is a finding.**  A movie whose tag TITLE carries an en dash, filed in a folder and under a file name without the ' - '.  Expect 'folder name' and 'file name' rows failing with the dashed names as expected, every other row unchanged, and Import republishing under the dashed folder.
+- **T-127  Folder ids that disagree with the tag are a finding.**  A movie folder carrying a different '[tmdbid-N]' from the tag's TMDB.  Expect the 'folder name' row failing and 'file name' passing.
+- **T-128  An edition is not a finding.**  'Alien 3 (1992) [...]/Alien 3 (1992) [...] - Assembly Cut.mkv' with a correct tag.  Expect both naming rows passing.
+- **T-129  A '[tmdbid-None]' show folder is a finding on every episode.**  A show folder written by 0.2.0 whose files carry TMDB in the COLLECTION block.  Expect the 'show folder' row failing on each file with the id in the expected name.
+- **T-130  An unpadded season folder is a finding.**  'Season 6' holding a file whose SEASON PART_NUMBER is 6.  Expect 'season folder' failing with 'Season 06' expected.
+- **T-131  A range file is compared as a range.**  'Show - S05E01-E02 - Title.mkv' with EPISODE PART_NUMBER 1.  Expect 'file name' passing;  the same file renamed 'S05E02-E03' fails.
+- **T-132  A component breaking a section 9 rule is a finding.**  A season folder ending in a period.  Expect 'component rules' failing and naming that component.
 
 ## 13.  Web
 

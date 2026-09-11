@@ -3,7 +3,9 @@ import os
 import threading
 import time
 
-from . import compare, probe as probemod, tags, titles
+import re
+
+from . import compare, episodes, probe as probemod, tags, titles
 
 log = logging.getLogger("audit")
 
@@ -14,7 +16,10 @@ REPAIR_TAGS = "tag rewrite"
 REPAIR_SEGMENT = "segment title"
 REPAIR_STATS = "statistics refresh"
 REPAIR_HDR = "hdr declaration"
+REPAIR_NAMING = "republish"
 REPAIR_NONE = None
+
+TAG_INCOMPLETE = "tag incomplete"
 
 HDR_ROWS = (
     ("mastering_display", "mastering display"),
@@ -39,20 +44,31 @@ def _stem(path):
     return os.path.splitext(os.path.basename(str(path)))[0]
 
 
-def _episode_title_portion(stem):
-    parts = stem.rsplit(" - ", 1)
-    return parts[1] if len(parts) == 2 else stem
+def _text(simples, name):
+    return (simples.get(name) or "").strip() or None
 
 
-def _movie_title_portion(stem):
-    match = titles.YEAR_IN_PARENS.search(stem)
-    if match:
-        return stem[:match.start()].rstrip()
-    return titles.title_before_ids(stem)
+def _number(simples, name):
+    value = _text(simples, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
-def _tag_titles(root, kind):
-    found = {"title": None, "show": None, "present": set(), "flattened": []}
+def _year_of(value):
+    match = re.search(r"(\d{4})", value or "")
+    return int(match.group(1)) if match else None
+
+
+def _tag_identity(root, kind):
+    found = {
+        "title": None, "show": None, "present": set(), "flattened": [],
+        "tmdb": None, "imdb": None, "tvdb": None, "year": None,
+        "season": None, "episode": None,
+    }
     if root is None:
         return found
     found["flattened"] = tags.slash_named_simples(root)
@@ -61,12 +77,100 @@ def _tag_titles(root, kind):
         target = tags._target_type(tag)
         simples = tags._simples(tag)
         if kind == "movie" and target == tags.MOVIE:
-            found["title"] = (simples.get("TITLE") or "").strip() or None
+            found["title"] = _text(simples, "TITLE")
+            found["tmdb"] = _text(simples, "TMDB")
+            found["imdb"] = _text(simples, "IMDB")
+            found["year"] = _year_of(_text(simples, "DATE_RELEASED"))
         elif kind == "tv" and target == tags.EPISODE:
-            found["title"] = (simples.get("TITLE") or "").strip() or None
+            found["title"] = _text(simples, "TITLE")
+            found["episode"] = _number(simples, "PART_NUMBER")
+        elif kind == "tv" and target == tags.SEASON:
+            found["season"] = _number(simples, "PART_NUMBER")
         elif kind == "tv" and target == tags.COLLECTION:
-            found["show"] = (simples.get("TITLE") or "").strip() or None
+            found["show"] = _text(simples, "TITLE")
+            found["tvdb"] = _text(simples, "TVDB")
+            found["tmdb"] = _text(simples, "TMDB")
     return found
+
+
+def _build(fn, *args):
+    try:
+        return fn(*args)
+    except titles.TitleError as exc:
+        return "unbuildable (%s)" % exc
+
+
+def _naming_row(check, expected, actual):
+    return _row(check, expected, actual, expected == actual, REPAIR_NAMING)
+
+
+def _movie_naming_rows(path, found):
+    name = os.path.basename(path)
+    stem = _stem(path)
+    parent = os.path.basename(os.path.dirname(path))
+    if not all(found.get(k) for k in ("title", "year", "tmdb", "imdb")):
+        return [
+            _row("folder name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
+            _row("file name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
+        ]
+    folder = _build(titles.movie_folder, found["title"], found["year"], found["tmdb"], found["imdb"])
+    rows = [_naming_row("folder name", folder, parent)]
+    plain = _build(titles.movie_filename, found["title"], found["year"])
+    edition_prefix = folder + " - "
+    if stem.startswith(edition_prefix):
+        label = stem[len(edition_prefix):]
+        rows.append(_naming_row("file name", _build(titles.movie_filename, found["title"], found["year"], label, folder), name))
+    elif stem.startswith(parent + " - "):
+        label = stem[len(parent) + 3:]
+        rows.append(_naming_row("file name", _build(titles.movie_filename, found["title"], found["year"], label, folder), name))
+    else:
+        rows.append(_naming_row("file name", plain, name))
+    return rows
+
+
+def _tv_naming_rows(path, found):
+    name = os.path.basename(path)
+    stem = _stem(path)
+    season_dir = os.path.basename(os.path.dirname(path))
+    show_dir = os.path.basename(os.path.dirname(os.path.dirname(path)))
+    complete = (
+        found.get("show") and found.get("tvdb") and found.get("tmdb")
+        and found.get("season") is not None and found.get("episode") is not None
+        and found.get("title")
+    )
+    if not complete:
+        return [
+            _row("show folder", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
+            _row("season folder", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
+            _row("file name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
+        ]
+    years = titles.YEAR_IN_PARENS.findall(show_dir)
+    show_year = years[-1] if years else "YYYY"
+    show = _build(titles.show_folder, found["show"], show_year, found["tvdb"], found["tmdb"])
+    season = titles.season_folder(found["season"])
+    parsed = episodes.parse_filename(stem)
+    last = None
+    if parsed and parsed["season"] == found["season"] and parsed["first"] == found["episode"]:
+        last = parsed["last"]
+    file_expected = _build(
+        titles.episode_filename, found["show"], found["season"], found["episode"], found["title"], last,
+    )
+    return [
+        _naming_row("show folder", show, show_dir),
+        _naming_row("season folder", season, season_dir),
+        _naming_row("file name", file_expected, name),
+    ]
+
+
+def _component_rows(path, kind):
+    components = [os.path.basename(path), os.path.basename(os.path.dirname(path))]
+    if kind == "tv":
+        components.append(os.path.basename(os.path.dirname(os.path.dirname(path))))
+    problems = []
+    for component in components:
+        for problem in titles.validate_component(component):
+            problems.append("%s: %s" % (component, problem))
+    return [_row("component rules", "none", "; ".join(problems) or "none", not problems, REPAIR_NAMING)]
 
 
 def _hdr_rows(video):
@@ -115,7 +219,7 @@ def assess(path, kind):
     rows.append(_row("video language", "eng", video_lang, video_lang == "eng", REPAIR_FLAGS))
 
     root = tags.read_tags(path)
-    found = _tag_titles(root, kind)
+    found = _tag_identity(root, kind)
     if kind == "movie":
         wanted = {tags.MOVIE}
         expected_structure = "MOVIE target"
@@ -129,18 +233,13 @@ def assess(path, kind):
         actual_structure += ", flattened"
     rows.append(_row("tag structure", expected_structure, actual_structure, structure_ok, REPAIR_TAGS))
 
-    stem = _stem(path)
     if kind == "movie":
-        name_portion = _movie_title_portion(stem)
+        rows += _movie_naming_rows(path, found)
     else:
-        name_portion = _episode_title_portion(stem)
-    tag_title = found["title"]
-    transformed = titles.to_filename(tag_title) if tag_title else None
-    rows.append(_row(
-        "tag TITLE transforms to", name_portion, transformed or "no TITLE",
-        bool(transformed) and transformed == name_portion, REPAIR_TAGS,
-    ))
+        rows += _tv_naming_rows(path, found)
+    rows += _component_rows(path, kind)
 
+    tag_title = found["title"]
     segment = container.get("segment_title")
     rows.append(_row(
         "segment title", tag_title or "(tag TITLE)", segment or "unset",
