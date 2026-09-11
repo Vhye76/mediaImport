@@ -23,6 +23,7 @@ HDR_ROWS = (
 )
 
 
+#----- Rows of the detail table
 def _row(check, expected, actual, ok, repair, surface=None):
     return {
         "check": check,
@@ -41,6 +42,13 @@ def _stem(path):
 def _episode_title_portion(stem):
     parts = stem.rsplit(" - ", 1)
     return parts[1] if len(parts) == 2 else stem
+
+
+def _movie_title_portion(stem):
+    match = titles.YEAR_IN_PARENS.search(stem)
+    if match:
+        return stem[:match.start()].rstrip()
+    return titles.title_before_ids(stem)
 
 
 def _tag_titles(root, kind):
@@ -82,6 +90,7 @@ def _hdr_rows(video):
     return rows
 
 
+#----- Assessing one library file
 def assess(path, kind):
     container = probemod.probe(path).container
     video = container.get("video") or {}
@@ -122,7 +131,7 @@ def assess(path, kind):
 
     stem = _stem(path)
     if kind == "movie":
-        name_portion = titles.title_before_ids(stem)
+        name_portion = _movie_title_portion(stem)
     else:
         name_portion = _episode_title_portion(stem)
     tag_title = found["title"]
@@ -160,6 +169,7 @@ def assess(path, kind):
     return failed, measured, summary
 
 
+#----- The sweep
 class Auditor:
     def __init__(self, cfg, layout, store, stop_event):
         self.cfg = cfg

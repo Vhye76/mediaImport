@@ -26,7 +26,7 @@ app/
   config.py         the environment interface, validated once at load
   paths.py          mount contract, write guards, atomic publish, encode job dirs
   locks.py          single-instance flock, encode job ownership, PID liveness
-  orchestrator.py   the state machine, the watcher, the two-slot encode scheduler
+  orchestrator.py   the state machine, the watcher, the assessment workers and the encoder pools
   encode.py         the encoder router and the three command builders
   gpu.py            the runtime GPU probe, vainfo parsing, degraded status
   media.py          remux, language strip, flag repair, cropdetect, grain probe
@@ -49,7 +49,7 @@ TESTPLAN.md         container validation cases, executed by hand
 
 'app/' is a single Python package with no third-party dependencies.  The standard library is sufficient and the HTTP client is hand-rolled on urllib.  KEEP IT THAT WAY.  No requests, no npm, no framework, no CDN.  A dependency-free image is trivially auditable and never breaks on a transitive upgrade.
 
-One process holds everything:  the orchestrator loop, the encode workers, the import watcher, the library auditor and the web UI, each on a thread.  That is deliberate.  The UI needs live orchestrator state, and every encode is a subprocess call, so the GIL is not a constraint.
+One process holds everything:  the assessment workers, one pool of threads per encoder plus one for passthrough, the import watcher, the library auditor and the web UI.  That is deliberate.  The UI needs live orchestrator state, and every encode is a subprocess call, so the GIL is not a constraint.
 
 ## 4.  Mount contract
 
@@ -109,6 +109,8 @@ Three or four complete passes per title.  So:  copy in once, do everything on th
 
 Startup compares 'os.stat().st_dev' of the encode mount against the complete mount and warns when they match, so a fast disk that silently landed on the same filesystem is visible rather than mysterious.
 
+STAGING HAPPENS BEHIND THE ENCODER SLOT, SO COPIES IN THE ENCODE AREA ARE BOUNDED BY THE SLOT COUNTS.  A title is staged by the pool thread that will encode it, after it has been dequeued, so at most 'CPU_SLOTS + GPU_SLOTS + 1' job directories exist at once whatever 'MAX_JOBS' says.  Before 2026-09-10 a worker staged as soon as it reached that stage and then blocked waiting for a slot, so a batch of 81 titles would have put three copies on the pool and left the other 78 unassessed;  section 6 records the measurement.
+
 Admission control requires roughly ENCODE_HEADROOM times the source size free before a job starts, read at admission time so it self-adjusts as the pool changes.  A job that runs out of space mid encode wastes the whole encode, so if the pool is small, lower MAX_JOBS rather than the multiplier.  There is no equivalent guard for memory.  That was considered and declined:  the prediction needs a constant nobody has measured and frame area dominates it, so sizing CONTAINER_MEM is the operator's call and an OOM kill mid encode is an accepted failure mode.
 
 ## 5.  Configuration
@@ -128,9 +130,9 @@ PUID / PGID          required          identity the supervisor drops to
 RENDER_GID           unset             supplementary group for /dev/dri, GPU off if unset
 RENDER_NODE          /dev/dri/renderD128  render node the GPU probe and QSV encoder use
 OUTPUT_CODEC         hevc              hevc or av1
-MAX_JOBS             3                 concurrent titles, also bounded by encode free space
-GPU_SLOTS            1                 concurrent GPU encodes
-CPU_SLOTS            1                 concurrent CPU encodes
+MAX_JOBS             3                 assessment workers:  probe, screen, identify, compare, route
+GPU_SLOTS            1                 GPU encode threads, and the bound on GPU-side staged copies
+CPU_SLOTS            1                 CPU encode threads, each at ENCODE_THREADS / CPU_SLOTS
 ENCODE_HEADROOM      3.0               multiple of source size required to admit a job
 ENCODE_THREADS       0                 0 autodetects from the cgroup CPU quota
 CRF                  18                default quality target
@@ -172,6 +174,7 @@ PROBED       one ffprobe pass, classify movie or tv
 SCREENED     minimum standards           fail -> collected, see below
 IDENTIFIED   provider ID resolution      fail -> collected; transient -> retry with backoff
 COMPARED     against library incumbent   loss -> QUARANTINE, ambiguous -> collected
+ROUTED       encoder chosen, waiting for a slot on its pool
 STAGED       copy into the encode job directory
 REMUXED      container conversion if needed, then language strip, then flag repair
 TAGGED       movie MOVIE block, or the three-level TV hierarchy
@@ -182,6 +185,8 @@ VERIFIED     duration, packets, statistics, readiness, HDR   fail -> HELD, force
 PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
+
+ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'MAX_JOBS' assessment workers take a title from DETECTED through ROUTED:  probe, screen, identify, compare and route, which chooses the encoder and stores the decision.  The title is then queued for one of three pools by that decision, 'cpu' with 'CPU_SLOTS' threads, 'gpu' with 'GPU_SLOTS', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.  Measured 2026-09-10 before the split:  81 titles at DETECTED, one encoding, two staged and blocked waiting for the single CPU slot, held queue empty, because a title was assessed only when an encode completed.  After the split the same batch is fully assessed within minutes, every gate failure is in the held queue before the first encode finishes, and a passthrough title publishes while an encode runs rather than behind it.  Resume places a title by its stage:  anything up to COMPARED goes back to assessment, ROUTED and later go to the pool its stored decision names, and a later stage with no stored decision is re-assessed.
 
 THE THREE ASSESSMENT STAGES RUN THROUGH BEFORE ANYTHING HOLDS.  SCREENED, IDENTIFIED and COMPARED are read-only assessments over the probed container, so a failure in one records its reasons and the next still runs, and the title holds once with everything the three of them found.  A clear comparison loss is the exception and quarantines immediately, because that verdict is definitive.  The working stages are not run speculatively:  STAGED, REMUXED and ENCODING transform the file and cost hours and disk, so a title can still hold a second time at READY or VERIFIED with whatever those find after the work is done.  Section 7 records why:  first-failure-decides was hiding the rest.
 
@@ -677,6 +682,8 @@ The grain signal cannot come from a hand-written sidecar, because in an automati
 
 Measured instead:  a 20 second sample from the middle of the file, encoded twice at a fixed CRF, once clean and once through a light 'hqdn3d' denoise.  Grain is expensive to encode, so a grainy source shows a large size delta and a clean digital source shows almost none.  The ratio is logged for every title so a bad threshold is visible rather than silent.  GRAIN_THRESHOLD tunes it.
 
+THE PROBE RUNS AT ROUTING, ON THE SOURCE, ONE AT A TIME.  Routing happens on the assessment side so the title can be queued for the right pool, and the probe reads its 20 seconds from the source on the array, which is the same picture the staging copy would carry.  Its scratch directory is 'encode/.probe/<title_id>', removed afterwards and swept at startup as an ownerless directory if a crash leaves it.  Probes are serialised on a semaphore of one, because three assessment workers each running two ultrafast encodes would take three cores from the running encoders;  one at a time bounds that to roughly one core for roughly ten seconds per title.  A sidecar 'film=' skips it, as does DRY_RUN.
+
 An 'encode.job' sidecar beside the source overrides the probe and wins:
 
 ```
@@ -811,14 +818,17 @@ ENCODES RUN UNDER A TRACKED SUBPROCESS AND ARE TERMINATED ON SHUTDOWN.  Without 
 
 PUBLISHING IS ATOMIC.  'paths.publish_file' reserves the destination with 'O_CREAT | O_EXCL', copies into it, then replaces.  The previous check-then-act with 'os.path.exists' followed by 'shutil.move' raced between the three concurrent workers:  the same film dropped in twice under different release names resolves to one provider ID, so one folder and one filename, and the second move overwrote the first.  Quarantine naming uses the same exclusive-create loop.
 
-### Slots
+### Pools
 
 ```
-GPU encode slots   1     the A310 has one media engine, queueing more at it gains nothing
-CPU encode slots   1     x265 preset slow and svt-av1 preset 4 both saturate the allotted cores
+GPU encode threads   1     the A310 has one media engine, queueing more at it gains nothing
+CPU encode threads   1     x265 preset slow and svt-av1 preset 4 both saturate the allotted cores
+passthrough threads  1     fixed;  the I/O-only path, bounded by the disk rather than a core
 ```
 
-These are separate from MAX_JOBS, which bounds concurrent titles and is really an encode-space capacity limit rather than a CPU one.
+Each pool has exactly as many threads as the device has slots and pulls from its own queue, so there is no semaphore to wait on and no device sits idle while a thread blocks on the other one.  'MAX_JOBS' is the assessment pool and has nothing to do with encoding capacity.
+
+TWO CPU ENCODERS GAIN LITTLE, AND ONLY AT LOW RESOLUTION.  'CPU_SLOTS=2' runs two encodes at 'pools=4' each on the same eight cores.  x265's wavefront parallelism is bounded by CTU rows, about 11 at 720p and 17 at 1080p, so one eight-thread encode leaves threads idle at low resolution and two four-thread encodes recover some of it.  Expect a modest aggregate gain on SD and 720p, near zero at 1080p and above, doubled per-title latency and doubled staged copies.  The setting is legitimate for an SD-heavy batch;  it is not a lever on throughput generally, and the GPU is the only thing that adds capacity rather than dividing it.
 
 The GPU is shared with whatever else uses it on the host.  At the HEVC default the pipeline does not touch it at all, so there is no contention today.  That changes the moment OUTPUT_CODEC becomes av1, and it is a constraint on making that switch rather than a problem now.
 
@@ -915,7 +925,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.1.0.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.2.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals an existing tag is a build that cannot be told apart from the one before it, on the provider User-Agent, on the image label, or in a bug report.  The workflow's 'validate' job enforces it:  it reads 'VERSION' from 'app/__init__.py', fetches the tags, and fails when the version is already tagged.  The 'image' job then tags the image with that version and stamps 'org.opencontainers.image.version' from it.  Consequence, stated plainly:  a manual run of the workflow on a tree whose 'VERSION' is already tagged fails at validation, which is the rule working as intended.
 

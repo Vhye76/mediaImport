@@ -291,6 +291,7 @@ def fix_flags_and_language(path):
     return {"edits": len(args) // 4}
 
 
+#----- HDR declaration repair
 def _video_selector(rows):
     for row in rows:
         if row["type"] == "video" and "V_MJPEG" not in (row["codec_id"] or "").upper():

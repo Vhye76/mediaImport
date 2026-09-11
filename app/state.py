@@ -12,6 +12,7 @@ PROBED = "PROBED"
 SCREENED = "SCREENED"
 IDENTIFIED = "IDENTIFIED"
 COMPARED = "COMPARED"
+ROUTED = "ROUTED"
 STAGED = "STAGED"
 REMUXED = "REMUXED"
 TAGGED = "TAGGED"
@@ -27,9 +28,10 @@ QUARANTINED = "QUARANTINED"
 FAILED = "FAILED"
 
 PIPELINE = (
-    DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED, STAGED, REMUXED,
+    DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED, ROUTED, STAGED, REMUXED,
     TAGGED, READY, ENCODING, ENCODED, VERIFIED, PUBLISHED, CLEANUP,
 )
+ASSESSMENT = (DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED)
 COMPLETE = (PUBLISHED, CLEANUP)
 TERMINAL = (CLEANUP, QUARANTINED)
 STOPPED = (HELD, QUARANTINED, FAILED)
@@ -40,6 +42,7 @@ DISPLAY_NAMES = {
     SCREENED: "screened",
     IDENTIFIED: "identified",
     COMPARED: "compared",
+    ROUTED: "waiting for encoder",
     STAGED: "copying",
     REMUXED: "remuxed",
     TAGGED: "tagged",
@@ -87,6 +90,7 @@ CREATE TABLE IF NOT EXISTS titles (
     encoder       TEXT,
     grain_ratio   REAL,
     probe_json    TEXT,
+    identity_json TEXT,
     decision_json TEXT,
     compare_json  TEXT,
     output_probe_json TEXT,
@@ -182,6 +186,7 @@ class Store:
             return None
         d = dict(row)
         d["probe"] = _unjson(d.pop("probe_json", None))
+        d["identity"] = _unjson(d.pop("identity_json", None))
         d["decision"] = _unjson(d.pop("decision_json", None))
         d["comparison"] = _unjson(d.pop("compare_json", None))
         d["output_probe"] = _unjson(d.pop("output_probe_json", None))
@@ -259,10 +264,10 @@ class Store:
         log.debug("title %s fields updated: %s", title_id, ", ".join(sorted(fields)))
         if not fields:
             return
-        for key in ("probe", "decision", "comparison", "output_probe", "reasons"):
+        for key in ("probe", "identity", "decision", "comparison", "output_probe", "reasons"):
             if key in fields:
-                column = {"probe": "probe_json", "decision": "decision_json",
-                          "comparison": "compare_json",
+                column = {"probe": "probe_json", "identity": "identity_json",
+                          "decision": "decision_json", "comparison": "compare_json",
                           "output_probe": "output_probe_json",
                           "reasons": "reasons_json"}[key]
                 fields[column] = _json(fields.pop(key))
@@ -337,6 +342,7 @@ class Store:
             encoder=None,
             grain_ratio=None,
             probe=None,
+            identity=None,
             decision=None,
             comparison=None,
             output_probe=None,
@@ -370,6 +376,7 @@ class Store:
         rows = self.active()
         return [r for r in rows if r["stage"] not in STOPPED]
 
+    #----- Library audit
     def _finding_to_dict(self, row):
         if row is None:
             return None

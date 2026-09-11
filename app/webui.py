@@ -166,6 +166,7 @@ class WebUI:
     def status(self):
         return self.orchestrator.status()
 
+    #----- Library audit
     def audit(self):
         return {
             "status": self.orchestrator.auditor.status(),
@@ -201,6 +202,8 @@ class WebUI:
         if not row:
             return row
         row["display_stage"] = state.display_name(row.get("stage"))
+        if row.get("stage") == state.ROUTED and (row.get("decision") or {}).get("action") == "passthrough":
+            row["display_stage"] = "waiting for passthrough"
         row["complete"] = state.is_complete(row.get("stage"))
         row["forceable"] = row.get("stage") == state.HELD
         output = row.get("output_path")

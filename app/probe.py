@@ -361,6 +361,7 @@ def _is_hdr(s):
     )
 
 
+#----- HDR declarations, both surfaces
 def _hdr_format(s):
     trc = (s.get("color_transfer") or "").lower()
     if trc == "smpte2084":
@@ -408,6 +409,7 @@ def _content_light(s):
 def _same_mastering(a, b):
     if not a or not b:
         return False
+    #----- luminance spans 0.0001 to 10000 cd/m2 and compares relatively;  chromaticity is 0 to 1 and compares absolutely.
     for key in MASTERING_KEYS:
         tolerance = LUMINANCE_TOLERANCE if "luminance" in key else CHROMATICITY_TOLERANCE
         if "luminance" in key:
@@ -488,6 +490,7 @@ def bitstream_hdr(path, frames=BITSTREAM_SAMPLE_FRAMES):
         path,
         [
             "-select_streams", "v:0",
+            #----- '%+#N' reads N frames from the start, enough to meet the SEI without decoding the file.
             "-read_intervals", "%%+#%d" % int(frames),
             "-show_entries", "frame=pts:frame_side_data",
         ],

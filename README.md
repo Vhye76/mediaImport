@@ -13,7 +13,7 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
          ->  tag  ->  readiness  ->  encode  ->  verify  ->  complete/
 ```
 
-Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
+Assessment runs ahead of encoding.  MAX_JOBS workers take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles from their queues in order.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
 
 Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.
 
@@ -28,6 +28,7 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | SCREENED | screened | Passed the minimum standards gate. |
 | IDENTIFIED | identified | Provider IDs resolved and verified.  The canonical name is settled from here on. |
 | COMPARED | compared | Checked against whatever the library already holds.  Also the value recorded when no library is mounted, when there is no incumbent, and when the incumbent could not be read. |
+| ROUTED | waiting for encoder | The encoder is chosen and the title is queued for its pool:  CPU, GPU or passthrough.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
 | STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
 | REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
@@ -56,7 +57,7 @@ app/            the pipeline: one module per concern
   config.py       the environment interface
   paths.py        mount contract, write guards, atomic publish
   locks.py        single-instance lock and encode job ownership
-  orchestrator.py the state machine and the two-slot encode scheduler
+  orchestrator.py the state machine, the assessment workers and the encoder pools
   encode.py       the encoder router and command builders
   gpu.py          the runtime GPU probe
   media.py        remux, language strip, flag repair, cropdetect, grain probe
@@ -139,9 +140,9 @@ The transform runs one way.  A filename can always be derived from a tag;  a tag
 | RENDER_GID | unset | supplementary group for /dev/dri, GPU off if unset |
 | RENDER_NODE | /dev/dri/renderD128 | render node the GPU probe and QSV encoder use |
 | OUTPUT_CODEC | hevc | hevc or av1 |
-| MAX_JOBS | 3 | concurrent titles, also bounded by encode free space |
-| GPU_SLOTS | 1 | concurrent GPU encodes |
-| CPU_SLOTS | 1 | concurrent CPU encodes |
+| MAX_JOBS | 3 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
+| GPU_SLOTS | 1 | GPU encode threads |
+| CPU_SLOTS | 1 | CPU encode threads, each at ENCODE_THREADS divided by CPU_SLOTS;  two gain little except on SD |
 | ENCODE_HEADROOM | 3.0 | multiple of source size required to admit a job |
 | ENCODE_THREADS | 0 | 0 autodetects from the cgroup CPU quota |
 | CRF | 18 | default quality target |
@@ -279,9 +280,10 @@ No authentication.  Anyone who can reach the port can drive it, including forcin
 
 ```
 GET  /                            dashboard
-GET  /api/status                  config, GPU state, encode space, queue depth, stage counts,
-                                  encoder slot occupancy, uptime, and live percent, ETA and
-                                  speed for every running encode
+GET  /api/status                  config, GPU state, encode space, stage counts, the depth of
+                                  the assessment queue and each encoder pool's queue, active
+                                  threads per pool, uptime, audit status, and live percent,
+                                  ETA and speed for every running encode
 GET  /api/titles                  every title
 GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue, held and failed titles together
@@ -350,7 +352,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.1.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
+Current version 0.2.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

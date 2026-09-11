@@ -253,7 +253,7 @@ Each case needs a prepared library file and a prepared incoming file that differ
 
 ## 6.  Routing
 
-Each case:  place one title matching the gate, wait for ENCODED, then read the gate and encoder back from '/api/titles/<id>' and confirm the output file's codec.
+Each case:  place one title matching the gate, wait for ENCODED, then read the gate and encoder back from the ROUTED entry in the title's stage history on '/api/titles/<id>' and confirm the output file's codec.
 
 ```
 T-31  gate 1   an hevc source           expect passthrough, output still hevc, not re-encoded
@@ -364,6 +364,17 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-70f  A re-imported source is processed, not skipped.**  After T-70e, drop the same source back into 'import/' under the same filename.  Expect it detected and processed rather than silently ignored.
 - **T-70g  A source still in flight is not processed twice.**  While a title is at ENCODING, confirm '/api/titles' holds no second row for its path and that the original row keeps its stage.  The skip itself is a debug line and is not asserted on.
 - **T-70h  The log records the encode and not the polls.**  Run one title to CLEANUP at the default 'info' level with a second title in flight.  Expect one ENCODED line and one VERIFIED line, each naming the title id, and no 'already claims this path' line at info.  This is the one case that reads the log, and it exists because the defect it guards was the log itself.
+
+## 12d.  Assessment ahead of encoding
+
+- **T-108  A batch is assessed before its first encode finishes.**  Drop a dozen mixed titles at once, several failing screening.  Expect every screening failure in HELD within the first minute, each with its full reason list, while the first encode is still running.
+- **T-109  Passthrough does not wait behind an encode.**  With a CPU encode running, drop an hevc source.  Expect it ROUTED, staged, verified and PUBLISHED on the passthrough pool while the encode continues.
+- **T-110  Staged copies are bounded by the pools.**  During T-108, count job directories in the encode area.  Expect at most 'CPU_SLOTS + GPU_SLOTS + 1' at any moment, never one per assessment worker.
+- **T-111  Status reports the queues.**  'GET /api/status' carries 'queues' with 'assess', 'cpu', 'gpu' and 'passthrough' depths and 'slots' with the active count per pool.
+- **T-112  Resume lands on the right queue.**  Restart mid-encode.  Expect the encoding title to resume on the CPU pool, a ROUTED passthrough on the passthrough pool, and a title interrupted before ROUTED to be re-assessed;  a title past ROUTED with no stored decision returns to DETECTED with a history entry saying so.
+- **T-113  A degraded GPU routes to the CPU at assessment.**  'RENDER_GID' unset, 'OUTPUT_CODEC=av1', a clean source.  Expect ROUTED to name libsvtav1 on the CPU with the "GPU unavailable" note, and nothing left waiting on the GPU queue.
+- **T-114  Grain probes are serialised.**  Drop three grain-heavy sources together with an encode running.  Expect the three probes to run one after another in the log, not overlapping.
+- **T-115  'CPU_SLOTS=2' runs two CPU encodes.**  Expect two titles ENCODING at once, each with 'pools=4' in the debug argv, three staged copies at most, and the queue draining at the same rate as with one.
 
 ## 12b.  Reasons and force
 

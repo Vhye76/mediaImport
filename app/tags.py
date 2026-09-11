@@ -356,6 +356,7 @@ def check_tracks(path):
     return problems
 
 
+#----- HDR declaration check
 def _declared(video, name):
     if name == "dolby_vision":
         return bool(video.get("dolby_vision"))
@@ -381,6 +382,7 @@ def check_hdr(path, baseline=None):
             "hdr declaration short of the bitstream: container lacks %s" % ", ".join(gap)
         )
 
+    #----- loss against the baseline is a hold;  absence on both surfaces is not.
     if not baseline:
         return problems
 

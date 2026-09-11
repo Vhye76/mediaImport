@@ -261,6 +261,7 @@ class Layout:
             raise FileExistsError("already present in import: %s" % destination)
         self.assert_writable(destination)
         self.guarded_makedirs(self.imports)
+        #----- the watcher ignores '.part', so the copy is invisible until the rename.
         staging = destination + ".part"
         try:
             shutil.copy2(source, staging)

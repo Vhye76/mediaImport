@@ -260,6 +260,7 @@ def x265_hdr_params(video):
     if colour is None:
         return None
     parts = [X265_HDR_COLOUR % colour]
+    #----- the bitstream figures win;  the container's are the fallback.
     md = video.get("mastering_bitstream") or video.get("mastering_display")
     if md:
         parts.append("master-display=%s" % _master_display(md))

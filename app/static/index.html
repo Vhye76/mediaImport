@@ -143,8 +143,11 @@
               display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
   .lst .row:last-child { border-bottom: none; }
   .lst .row .why { font-size: 12px; color: var(--warn); margin-top: 2px; }
+  .lst .row > div:first-child { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
   .lst .row .nm { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-  .lst .row .btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .lst .row .btns { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap;
+                    justify-content: flex-end; }
+  .lst .row .btns button { white-space: nowrap; }
   #lst-acts { padding: 10px 16px; border-bottom: 1px solid var(--line);
               display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #lst-acts .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase;
@@ -228,7 +231,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const QUEUE_STAGES = ["DETECTED", "PROBED", "SCREENED", "IDENTIFIED", "COMPARED",
+const QUEUE_STAGES = ["DETECTED", "PROBED", "SCREENED", "IDENTIFIED", "COMPARED", "ROUTED",
                       "STAGED", "REMUXED", "TAGGED", "READY"];
 const ENC_STAGES = ["ENCODING", "ENCODED", "VERIFIED"];
 const READY_STAGES = ["PUBLISHED", "CLEANUP"];
@@ -336,7 +339,8 @@ async function refresh() {
   const inStage = (set) => titles.filter(t => set.includes(t.stage));
 
   paint("t-queue", "n-queue", inStage(QUEUE_STAGES),
-        (t) => `<div class="s">${esc(t.display_stage || t.stage)}</div>`,
+        (t) => `<div class="s">${esc(t.display_stage || t.stage)}${
+          t.stage === "ROUTED" && t.encoder ? " - " + esc(t.encoder) : ""}</div>`,
         "Nothing waiting.");
 
   paint("t-enc", "n-enc", inStage(ENC_STAGES), (t) => {
@@ -536,6 +540,7 @@ async function showCompare(id) {
   $("cmp").showModal();
 }
 
+//----- Library findings
 function when(ts) {
   if (!ts) return "never";
   return new Date(ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});

@@ -43,36 +43,40 @@ def read_sidecar(directory):
     return out
 
 
-#----- Encoder slot accounting
-class Slots:
+#----- Encoder pools
+PASSTHROUGH_WORKERS = 1
+POOLS = (encode.CPU, encode.GPU, encode.PASSTHROUGH)
+
+
+class Pools:
     def __init__(self, cfg):
-        self.gpu = threading.Semaphore(max(cfg.gpu_slots, 0) or 1)
-        self.cpu = threading.Semaphore(max(cfg.cpu_slots, 0) or 1)
-        self.gpu_active = 0
-        self.cpu_active = 0
+        self.sizes = {
+            encode.CPU: max(cfg.cpu_slots, 0),
+            encode.GPU: max(cfg.gpu_slots, 0),
+            encode.PASSTHROUGH: PASSTHROUGH_WORKERS,
+        }
+        self.queues = {name: queue.Queue() for name in POOLS}
+        self.active = {name: 0 for name in POOLS}
         self._lock = threading.Lock()
 
-    def acquire(self, device):
-        sem = self.gpu if device == encode.GPU else self.cpu
-        sem.acquire()
+    def enter(self, name):
         with self._lock:
-            if device == encode.GPU:
-                self.gpu_active += 1
-            else:
-                self.cpu_active += 1
-        return sem
+            self.active[name] += 1
 
-    def release(self, device, sem):
+    def leave(self, name):
         with self._lock:
-            if device == encode.GPU:
-                self.gpu_active -= 1
-            else:
-                self.cpu_active -= 1
-        sem.release()
+            self.active[name] -= 1
 
     def snapshot(self):
         with self._lock:
-            return {"gpu_active": self.gpu_active, "cpu_active": self.cpu_active}
+            return {
+                "gpu_active": self.active[encode.GPU],
+                "cpu_active": self.active[encode.CPU],
+                "passthrough_active": self.active[encode.PASSTHROUGH],
+            }
+
+    def depths(self):
+        return {name: q.qsize() for name, q in self.queues.items()}
 
 
 #----- Stage outcomes
@@ -107,9 +111,10 @@ class Orchestrator:
         self.store = store
         self.gpu = gpu_status
         self.provider = provider
-        self.slots = Slots(cfg)
+        self.pools = Pools(cfg)
         self.queue = queue.Queue()
         self.workers = []
+        self._grain_lock = threading.Semaphore(1)
         self.stop_event = threading.Event()
         self.started_at = time.time()
         self._seen_sizes = {}
@@ -129,9 +134,16 @@ class Orchestrator:
                 name, (owner or {}).get("pid"),
             )
         for n in range(self.cfg.max_jobs):
-            t = threading.Thread(target=self._worker, name="worker-%d" % n, daemon=True)
+            t = threading.Thread(target=self._assess_worker, name="assess-%d" % n, daemon=True)
             t.start()
             self.workers.append(t)
+        for name in POOLS:
+            for n in range(self.pools.sizes[name]):
+                t = threading.Thread(
+                    target=self._work_worker, args=(name,), name="%s-%d" % (name, n), daemon=True
+                )
+                t.start()
+                self.workers.append(t)
         t = threading.Thread(target=self._watch, name="watcher", daemon=True)
         t.start()
         self.workers.append(t)
@@ -215,7 +227,24 @@ class Orchestrator:
                 "title %s resuming %s from stage %s",
                 row["id"], row["source_path"], row["stage"],
             )
+            self._enqueue(row)
+
+    def _pool_for(self, decision):
+        if not decision or not decision.get("action"):
+            return None
+        if decision.get("action") == encode.PASSTHROUGH:
+            return encode.PASSTHROUGH
+        return decision.get("device") or encode.CPU
+
+    def _enqueue(self, row):
+        pool = None if row["stage"] in state.ASSESSMENT else self._pool_for(row.get("decision"))
+        if pool is None:
+            if row["stage"] not in state.ASSESSMENT:
+                log.info("title %s has no routing decision, re-assessing", row["id"])
+                self.store.advance(row["id"], state.DETECTED, "re-assessed, no routing decision stored")
             self.queue.put(row["id"])
+            return
+        self.pools.queues[pool].put(row["id"])
 
     def _watch(self):
         while not self.stop_event.is_set():
@@ -280,28 +309,45 @@ class Orchestrator:
         self._seen_sizes[path] = stat.st_size
         return previous == stat.st_size
 
-    def _worker(self):
+    #----- Workers, one half each
+    def _assess_worker(self):
         while not self.stop_event.is_set():
             try:
                 title_id = self.queue.get(timeout=1)
             except queue.Empty:
                 continue
             try:
-                self.process(title_id)
-            except Exception as exc:
-                log.exception("title %s failed", title_id)
-                self.store.advance(title_id, state.FAILED, str(exc), reason=str(exc))
+                self._run(title_id, self._assess)
             finally:
                 self.queue.task_done()
 
+    def _work_worker(self, pool):
+        q = self.pools.queues[pool]
+        while not self.stop_event.is_set():
+            try:
+                title_id = q.get(timeout=1)
+            except queue.Empty:
+                continue
+            self.pools.enter(pool)
+            try:
+                self._run(title_id, self._work)
+            finally:
+                self.pools.leave(pool)
+                q.task_done()
+
+    def _run(self, title_id, half):
+        try:
+            half(title_id)
+        except Exception as exc:
+            log.exception("title %s failed", title_id)
+            self.store.advance(title_id, state.FAILED, str(exc), reason=str(exc))
+
     #----- The chain
-    def process(self, title_id):
+    def _assess(self, title_id):
         row = self.store.get(title_id)
         if row is None:
             return
         source = row["source_path"]
-        job_id = row["job_id"] or uuid.uuid4().hex[:12]
-
         try:
             container = self._probe(title_id, source)
             kind = self._classify(title_id, source, container)
@@ -311,6 +357,27 @@ class Orchestrator:
             reasons += self._compare(title_id, container, identity, kind, source)
             if reasons:
                 raise HoldError(reasons)
+            pool = self._route(title_id, container, kind, source)
+            self.pools.queues[pool].put(title_id)
+        except HoldError as exc:
+            log.warning("held: %s: %s", source, exc)
+            self.store.hold(title_id, exc.reasons)
+        except RetryLater as exc:
+            self._retry_later(title_id, source, exc)
+        except QuarantineError as exc:
+            log.debug("quarantine raised on %s: %s", source, exc)
+            self._quarantine(title_id, source, str(exc))
+
+    def _work(self, title_id):
+        row = self.store.get(title_id)
+        if row is None:
+            return
+        source = row["source_path"]
+        job_id = row["job_id"] or uuid.uuid4().hex[:12]
+        kind = row["kind"]
+        identity = row.get("identity") or {}
+        try:
+            container = row.get("probe") or probemod.probe(source).container
             workdir, work = self._stage(title_id, source, job_id, container)
             work = self._remux(title_id, work, source)
             if not self.cfg.dry_run:
@@ -330,18 +397,22 @@ class Orchestrator:
             log.warning("held: %s: %s", source, exc)
             self.store.hold(title_id, exc.reasons)
         except RetryLater as exc:
-            row = self.store.get(title_id) or {}
-            attempts = row.get("attempts") or 0
-            if attempts + 1 >= RETRY_MAX_ATTEMPTS:
-                log.warning("giving up after %d attempts: %s: %s", attempts + 1, source, exc)
-                self.store.hold(title_id, "%s (gave up after %d attempts)" % (exc, attempts + 1))
-            else:
-                delay = RETRY_BASE_DELAY * (2 ** attempts)
-                log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
-                self.store.hold_for_retry(title_id, str(exc), delay)
+            self._retry_later(title_id, source, exc)
         except QuarantineError as exc:
             log.debug("quarantine raised on %s: %s", source, exc)
             self._quarantine(title_id, source, str(exc))
+
+    def _retry_later(self, title_id, source, exc):
+        row = self.store.get(title_id) or {}
+        attempts = row.get("attempts") or 0
+        if attempts + 1 >= RETRY_MAX_ATTEMPTS:
+            log.warning("giving up after %d attempts: %s: %s", attempts + 1, source, exc)
+            self.store.hold(title_id, "%s (gave up after %d attempts)" % (exc, attempts + 1))
+        else:
+            delay = RETRY_BASE_DELAY * (2 ** attempts)
+            log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
+            self.store.hold_for_retry(title_id, str(exc), delay)
+
 
     #----- Stages, in chain order
     def _probe(self, title_id, source):
@@ -390,6 +461,7 @@ class Orchestrator:
                     state.IDENTIFIED,
                     "unidentified, forced through under its source name %r" % identity["title"],
                     title=identity["title"],
+                    identity=identity,
                 )
                 return identity, []
             self.store.record(title_id, state.IDENTIFIED, problem)
@@ -408,6 +480,7 @@ class Orchestrator:
             imdb=identity.get("imdb"),
             tvdb=identity.get("tvdb"),
             poster_url=self._poster_url(kind, identity),
+            identity=identity,
         )
         return identity, []
 
@@ -615,6 +688,49 @@ class Orchestrator:
                 return os.path.join(season_dir, entry)
         return None
 
+    #----- Routing, the last assessment step
+    def _route(self, title_id, container, kind, source):
+        override = read_sidecar(os.path.dirname(source))
+        video = container["video"]
+        decision = encode.select(
+            video, kind, self.cfg, grain=None,
+            gpu_available=self.gpu.available, override=override,
+        )
+        if not decision.is_passthrough and "film" not in override:
+            result = self._grain(title_id, source, video, container)
+            self.store.update(title_id, grain_ratio=result.get("ratio"))
+            decision = encode.select(
+                video, kind, self.cfg, grain=result["grain"],
+                gpu_available=self.gpu.available, override=override,
+            )
+            log.info(
+                "title %s grain probe %s: %s",
+                title_id, os.path.basename(source), result["reason"],
+            )
+        log.info("title %s router %s", title_id, encode.describe(decision))
+        for note in decision.notes:
+            log.info("title %s router note: %s", title_id, note)
+        pool = self._pool_for(decision.as_dict())
+        self.store.advance(
+            title_id, state.ROUTED, encode.describe(decision),
+            decision=decision.as_dict(), encoder=decision.encoder,
+        )
+        return pool
+
+    def _grain(self, title_id, source, video, container):
+        if self.cfg.dry_run:
+            return {"grain": False, "ratio": None, "reason": "dry run"}
+        scratch = os.path.join(self.layout.encode, ".probe", str(title_id))
+        with self._grain_lock:
+            self.layout.guarded_makedirs(scratch)
+            try:
+                return media.grain_probe(
+                    source, video, scratch,
+                    threshold=self.cfg.grain_threshold, container=container,
+                )
+            finally:
+                shutil.rmtree(scratch, ignore_errors=True)
+
     #----- Staging, remux and tagging
     def _stage(self, title_id, source, job_id, container):
         size = container.get("size_bytes") or os.path.getsize(source)
@@ -746,34 +862,15 @@ class Orchestrator:
         row = self.store.get(title_id)
         override = read_sidecar(os.path.dirname(source))
         video = container["video"]
-
-        grain = None
-        decision = encode.select(
-            video, kind, self.cfg, grain=None,
-            gpu_available=self.gpu.available, override=override,
+        stored = row.get("decision") or {}
+        decision = encode.Decision(
+            stored.get("action") or encode.PASSTHROUGH,
+            stored.get("gate") or 0,
+            stored.get("reason") or "no routing decision stored",
+            encoder=stored.get("encoder"),
+            grain=stored.get("grain"),
+            notes=stored.get("notes"),
         )
-        if not decision.is_passthrough and "film" not in override:
-            result = media.grain_probe(
-                work, video, workdir,
-                threshold=self.cfg.grain_threshold, container=container,
-            ) if not self.cfg.dry_run else {
-                "grain": False, "ratio": None, "reason": "dry run"
-            }
-            grain = result["grain"]
-            self.store.update(title_id, grain_ratio=result.get("ratio"))
-            decision = encode.select(
-                video, kind, self.cfg, grain=grain,
-                gpu_available=self.gpu.available, override=override,
-            )
-            log.info(
-                "title %s grain probe %s: %s",
-                title_id, os.path.basename(work), result["reason"],
-            )
-
-        self.store.update(title_id, decision=decision.as_dict(), encoder=decision.encoder)
-        log.info("title %s router %s", title_id, encode.describe(decision))
-        for note in decision.notes:
-            log.info("title %s router note: %s", title_id, note)
 
         if decision.is_passthrough:
             self.store.advance(
@@ -806,7 +903,6 @@ class Orchestrator:
             self.store.advance(title_id, state.ENCODED, "dry run")
             return work
 
-        sem = self.slots.acquire(decision.device)
         started = time.time()
         duration = probemod.usable_duration(video, container)
         self.store.advance(
@@ -831,10 +927,9 @@ class Orchestrator:
                     "%s failed: %s" % (decision.encoder, (proc.stderr or "").strip()[-400:])
                 )
         finally:
-            self.slots.release(decision.device, sem)
+            self._progress.pop(title_id, None)
 
         elapsed = int(time.time() - started)
-        self._progress.pop(title_id, None)
         tags.refresh_statistics(target)
         media.fix_flags_and_language(target)
         self._apply_tags(target, identity, kind, carry)
@@ -978,6 +1073,7 @@ class Orchestrator:
         log.info("title %s quarantined %s: %s", title_id, os.path.basename(source), reason)
         return "quarantined"
 
+    #----- Library repair
     def import_finding(self, finding_id):
         finding = self.store.finding(finding_id)
         if finding is None:
@@ -1008,7 +1104,8 @@ class Orchestrator:
             "started_at": self.started_at,
             "uptime_s": int(time.time() - self.started_at),
             "queue_depth": self.queue.qsize(),
-            "slots": self.slots.snapshot(),
+            "queues": dict({"assess": self.queue.qsize()}, **self.pools.depths()),
+            "slots": self.pools.snapshot(),
             "progress": dict(self._progress),
             "stages": self.store.counts_by_stage(),
             "gpu": self.gpu.as_dict(),
