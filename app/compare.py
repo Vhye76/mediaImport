@@ -4,6 +4,7 @@ import re
 
 log = logging.getLogger("compare")
 
+#----- Verdicts, tolerances and codec weighting
 WIN = "win"
 LOSS = "loss"
 AMBIGUOUS = "ambiguous"
@@ -52,12 +53,17 @@ def _pedigree_rank(label):
         return -1
 
 
+#----- The measured attribute set
 MEASURED = (
     ("path", "file", None),
     ("codec", "video codec", None),
     ("profile", "video profile", None),
     ("dolby_vision", "Dolby Vision", 1),
     ("hdr", "HDR", 1),
+    ("hdr_format", "HDR format", None),
+    ("mastering_display", "mastering display declared", None),
+    ("content_light", "content light level declared", None),
+    ("hdr_declaration_gap", "HDR declared short of the bitstream", None),
     ("display_width", "display width", 2),
     ("display_height", "display height", 2),
     ("display_pixels", "display pixels", 2),
@@ -97,6 +103,19 @@ MEASURED = (
 GATE_BY_ATTRIBUTE = {key: gate for key, _, gate in MEASURED if gate}
 
 
+#----- Measuring one file
+def _mastering_summary(md):
+    if not md:
+        return None
+    return "L %g-%g cd/m2" % (md.get("min_luminance") or 0.0, md.get("max_luminance") or 0.0)
+
+
+def _content_light_summary(cl):
+    if not cl:
+        return None
+    return "MaxCLL %s, MaxFALL %s" % (cl.get("max_content"), cl.get("max_average"))
+
+
 def _joined(values):
     seen = []
     for value in values:
@@ -133,6 +152,10 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
         "colour_transfer": video.get("color_transfer"),
         "colour_space": video.get("color_space"),
         "colour_tagged": bool(video.get("colour_tagged")),
+        "hdr_format": video.get("hdr_format"),
+        "mastering_display": _mastering_summary(video.get("mastering_display")),
+        "content_light": _content_light_summary(video.get("content_light")),
+        "hdr_declaration_gap": _joined(video.get("hdr_declaration_gap") or []),
         "audio_channels_max": int(container.get("audio_channels_max") or 0),
         "audio_codecs": _joined([a.get("codec") for a in audio]),
         "audio_tracks": len(audio),
@@ -176,6 +199,7 @@ def measure(path, crop=None):
     return attributes(container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio)
 
 
+#----- Frame rate across the pair
 def speed_mismatch(incoming, incumbent):
     new_frames = incoming.get("frame_count")
     old_frames = incumbent.get("frame_count")
@@ -204,6 +228,7 @@ def speed_mismatch(incoming, incumbent):
     )
 
 
+#----- The verdict
 class Comparison:
     def __init__(self, verdict, gate, reason, incoming, incumbent, notes=None, votes=None):
         self.verdict = verdict
@@ -266,6 +291,7 @@ class Comparison:
         return "<Comparison %s gate=%s>" % (self.verdict, self.gate)
 
 
+#----- The gates, tallied
 def _cast(votes, gate, reason, new, old):
     verdict = WIN if new > old else LOSS
     votes.append({

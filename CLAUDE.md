@@ -16,7 +16,7 @@ PROMOTION INTO THE LIBRARIES IS MANUAL, ALWAYS.  The pipeline ends at 'complete/
 
 NOTHING THAT MATTERS IS EVER DELETED.  A failure holds.  A rejected file goes to quarantine.  A completed source is retired to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed, and no code doing so should be added.  The exception, and it is the only one, is the encode area:  intermediates there are removed once their successor exists, and a job directory is wiped after its title retires.  Those are the nine deletion calls in the codebase and they touch nothing else.
 
-A PROVIDER ID IS NEVER GUESSED.  If it cannot be resolved, the title holds.  Guessed numeric IDs have historically returned a Russian district, a Polish village, a bank and an unrelated film, each confidently formatted and entirely wrong.
+A PROVIDER ID IS NEVER GUESSED.  If it cannot be resolved, the title holds until an operator forces it.  Guessed numeric IDs have historically returned a Russian district, a Polish village, a bank and an unrelated film, each confidently formatted and entirely wrong.  A forced unidentified title carries no provider ID at all:  it keeps the name it arrived with, its tag block holds TITLE only, and it lands flat in 'complete/' rather than in a provider-named folder, so it cannot be mistaken for finished work.  That is not a guess;  it is the honest outcome, and the prohibition on guessing is unchanged.
 
 ## 3.  Repository layout
 
@@ -39,6 +39,7 @@ app/
   provider.py       Wikidata, TMDB and TVDB lookups with an on-disk cache
   state.py          SQLite store, one row per title, plus stage history
   webui.py          JSON API and dashboard
+  audit.py          the background library sweep and its findings
   static/           the dashboard page, vanilla JS, no framework
 media/              the container icon, a placeholder, excluded from the image
 Dockerfile          debian:trixie-slim plus ffmpeg, mkvtoolnix, Intel media stack
@@ -142,6 +143,8 @@ LOCK_WAIT_TIMEOUT    0                 seconds to wait for the instance lock, 0 
 LOCK_WAIT_INTERVAL   15
 GRAIN_THRESHOLD      0.18              denoise delta above which a source counts as grainy
 LOG_LEVEL            info              info or debug, see section 20
+AUDIT_INTERVAL       2                 seconds between library files audited, 0 disables the sweep
+AUDIT_SWEEP_INTERVAL 3600              seconds between passes over the libraries
 ```
 
 Adding a setting means adding it to 'Config.as_dict()' as well, or it silently vanishes from the startup banner and the status endpoint, which is where anyone debugging looks first.  NOTHING ENFORCES THAT TABLE.  It was machine-checked once and is not any more, so a setting added to the code and not to this table drifts silently until someone reads both.  TESTPLAN.md case T-01 compares the two by hand at startup.
@@ -166,9 +169,9 @@ TWO SETTINGS EXIST IN BOTH PLACES.  'RENDER_NODE' has a module-level fallback at
 ```
 DETECTED     size stable across two polls, mtime quiet
 PROBED       one ffprobe pass, classify movie or tv
-SCREENED     minimum standards           fail -> HELD, overridable
-IDENTIFIED   provider ID resolution      fail -> HELD; transient -> retry with backoff
-COMPARED     against library incumbent   loss -> QUARANTINE, ambiguous -> HELD
+SCREENED     minimum standards           fail -> collected, see below
+IDENTIFIED   provider ID resolution      fail -> collected; transient -> retry with backoff
+COMPARED     against library incumbent   loss -> QUARANTINE, ambiguous -> collected
 STAGED       copy into the encode job directory
 REMUXED      container conversion if needed, then language strip, then flag repair
 TAGGED       movie MOVIE block, or the three-level TV hierarchy
@@ -179,6 +182,8 @@ VERIFIED     duration, statistics
 PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
+
+THE THREE ASSESSMENT STAGES RUN THROUGH BEFORE ANYTHING HOLDS.  SCREENED, IDENTIFIED and COMPARED are read-only assessments over the probed container, so a failure in one records its reasons and the next still runs, and the title holds once with everything the three of them found.  A clear comparison loss is the exception and quarantines immediately, because that verdict is definitive.  The working stages are not run speculatively:  STAGED, REMUXED and ENCODING transform the file and cost hours and disk, so a title can still hold a second time at READY or VERIFIED with whatever those find after the work is done.  Section 7 records why:  first-failure-decides was hiding the rest.
 
 PUBLISHED IS THE END OF THE PIPELINE FOR A PERSON;  CLEANUP IS HOUSEKEEPING.  Everything after PUBLISHED operates on the pipeline's own working areas and touches nothing the operator collects.  A CLEANUP failure therefore must never present a published title as failed.  Section 21 records the incident:  the encode, the verification and the publish had all completed and only the final move failed, and "the title landed in FAILED with the work already done."  The move fallback fixed that cause;  treating a housekeeping step as the terminus was the shape that let it mispresent, and PUBLISHED being terminal is what fixes the shape.  'state.COMPLETE' is the pair, and the dashboard reads it as one figure.
 
@@ -225,7 +230,25 @@ The 40 minute movie floor exists because a 10 minute bonus featurette once quali
 
 Failures go to 'hold/' with a written reason, never silently to quarantine.  The UI carries a per-title override that forces a title through anyway.
 
-THE OVERRIDE CLEARS EVERY GATE, NOT ONLY THIS ONE.  'overridden' was read in one place, '_screen', so Force through on a comparison hold set the flag, requeued the title, and '_compare' recomputed the identical verdict and held it again.  Blade Runner 2049 did that six times in one session, each pass re-probing the incumbent and re-running cropdetect on both sides for nothing.  '_compare' now reads the flag at its top, ahead of '_find_incumbent', so an overridden title spends no time on work whose answer is already discarded.  The consequence is deliberate:  a clear LOSS is forced through as well as an ambiguous verdict, so 'complete/' can hold a title the comparison rejected.  Nothing writes to a library and promotion stays manual, which is what keeps that safe.
+THE OVERRIDE CLEARS EVERY GATE IT CAN REACH, AND A HELD TITLE STATES EVERY REASON IT WAS HELD.  'overridden' was originally read in one place, '_screen', so Force through on a comparison hold set the flag, requeued the title, and '_compare' recomputed the identical verdict and held it again.  Blade Runner 2049 did that six times in one session.  The same shape recurred everywhere else:  with two gates reading the flag, a title held at readiness or verification had no instrument at all, and because 'process()' raised on the first objection a title held for one reason could have three more behind it, discovered one requeue at a time.  Both are fixed by the same rule section 8 already applies to the comparison, every gate evaluated and the verdicts collected.
+
+The flag is now read at seven gates:
+
+```
+_screen     standards bypassed
+_compare    comparison bypassed, including a clear LOSS
+_identify   proceeds with no provider ID, section 2
+_ready      proceeds, the readiness problems recorded in the stage history
+_verify     proceeds, the verification problems recorded in the stage history
+_publish    a destination collision publishes beside it under a unique name, never over it
+_remux      the mp4-path duration drift is a recorded note, as the avi path already was
+```
+
+FOUR STOP POINTS STAY OUT OF REACH, AND THAT IS PHYSICAL RATHER THAN POLICY.  An unreadable probe, a non-zero ffmpeg or mkvmerge in the remux, a non-zero encoder, and an I/O failure at publish each mean no output file exists, so there is nothing to carry forward.  Those land in FAILED, and FAILED is exactly the set force cannot apply to:  the decision endpoint refuses 'override' on a FAILED title and the UI offers Retry instead of Force.  HELD is the judgement set, and every HELD title is forceable.
+
+A held title's reasons are stored as a list on the row and rendered as a list in the detail dialog, one entry per gate that objected, with the one-line 'reason' kept as the joined summary for tiles and logs.  Every gate a forced title bypassed is written into its stage history at the point it was bypassed, so a forced file is recorded as unverified rather than silently unverified.
+
+The consequence is deliberate:  a clear LOSS is forced through as well as an ambiguous verdict, and a file that failed truncation or packet-count checks can be forced to 'complete/'.  Nothing writes to a library and promotion stays manual, which is what keeps that safe.
 
 The letterbox check is cheap-first:  only a frame whose display aspect is 16:9 or 4:3 can hide baked in bars, so a warning is raised on those and the expensive cropdetect runs later, on candidates only.  Bars under about 20 px are not worth acting on.
 
@@ -520,6 +543,20 @@ It defeats every cheap check.  A grep for COLLECTION passes, all strings are pre
 
 An audit of 2276 episodes found 329 affected across four shows, and 51 of 213 movies carried the same defect as 'MOVIE/TITLE'.  The data in a flattened block is normally correct and only the shape is wrong, so the repair is structural, not a re-derivation.
 
+### HDR declarations
+
+A Matroska file declares its HDR metadata twice, and the two can disagree.  The bitstream carries mastering display colour volume (ST 2086) and content light level (MaxCLL, MaxFALL) as SEI messages, which ffprobe shows as frame side data.  The container carries the same figures in the track's Colour and MasteringMetadata elements, which ffprobe shows as stream side data.  A player, and every tool that reads only '-show_streams', sees the container.
+
+MEASURED 2026-09-10 ACROSS THE LIBRARY:  215 movies hold 8 HDR titles, all HEVC Main 10, PQ, bt2020.  Every one carries ST 2086 and CLL in the bitstream.  Three declare no ST 2086 in the container and four declare no CLL, and Saving Private Ryan declares nothing at all while its SEI carries everything.  ffmpeg's own x265 output from a source with no side data, a filter graph for instance, produces exactly that shape:  full SEI, empty container.
+
+THE PROBE READS BOTH SURFACES.  'probe.probe' keeps the container's mastering display and content light level from the stream side data, and for any stream '_is_hdr' accepts it runs a second, narrow ffprobe over the first twelve frames for the SEI.  'hdr_declaration_gap' names every declaration the bitstream carries that the container lacks or states differently.  The bitstream is authoritative:  a container that disagrees with its own SEI is repaired to match, silently, and the change is recorded in the stage history.
+
+THE REPAIR IS A HEADER EDIT ON THE REMUX PATH.  'media.repair_hdr_declaration' runs beside 'fix_flags_and_language', through mkvpropedit, and writes the ST 2086 chromaticities and luminances and the two light levels from the bitstream figures.  mkvpropedit takes floats and spells the properties 'color-', not 'colour-';  ffprobe reports the same figures back as rationals, so 0.68 reads back as 11408507/16777216 and 0.0001 as 209800/2098000053.  A file with no mastering metadata on either surface is left alone;  HLG in particular is legitimate without it, and nothing is ever manufactured.  The DOVI configuration record is out of reach for a header edit, so an RPU in the bitstream with no container record is detected and held, never repaired.
+
+NEITHER REMUX PATH LOSES THE DECLARATION AND NEITHER CREATES ONE.  Measured in the image:  mkvmerge as 'strip_foreign' uses it and 'ffmpeg -c copy' as the container conversion uses it both preserve the Colour element, and both leave an absent one absent.  The passthrough path is therefore the only place the repair is needed;  an encode heals the container by itself, because ffmpeg's HEVC decoder exports the SEI as side data and the muxer writes the container element from it.
+
+THE GATE FAILS ON LOSS, NEVER ON ABSENCE.  'tags.check_hdr' runs inside 'readiness' at READY and again at VERIFIED against the file that ships, with the PROBED probe as its baseline.  A declaration the source carried on either surface that the output's container lacks is a hold, and so is a colour tag that changed.  A declaration the output gained is fine;  an encode legitimately declares more than an under-declaring source did.
+
 ### Statistics
 
 Every file carries per-track BPS, DURATION, NUMBER_OF_FRAMES and NUMBER_OF_BYTES, written with '--add-track-statistics-tags'.
@@ -584,7 +621,7 @@ Gate 1:  an already-AV1 file is never transcoded back to HEVC.
 
 Gate 2:  SD television is never re-encoded.  An SD source has little to gain and a generation of quality to lose.  SD means display height below 720, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays.  TV_ENCODE_SD re-enables it.
 
-Gate 3:  an AV1 re-encode discards the Dolby Vision RPU, because AV1 Dolby Vision is profile 10 and effectively nothing plays it.  DV titles always take the x265 path, on every setting.  This is why the x265 path can never be retired.
+Gate 3:  an AV1 re-encode discards the Dolby Vision RPU, because AV1 Dolby Vision is profile 10 and effectively nothing plays it.  DV titles always take the x265 path, on every setting.  This is why the x265 path can never be retired.  GATE 3 IS UNREACHABLE FOR REAL MATERIAL, AND THAT IS FINE.  Every Dolby Vision profile is HEVC or AV1, so gate 1 returns passthrough first and no DV title reaches an encoder today.  Gate 1 is what protects the RPU;  gate 3 is the backstop for a DV source in some third codec, which does not exist.  'build_command' refuses any encoder but libx265 for a DV title regardless, so a change to gate 1 cannot silently drop an RPU.
 
 PASSTHROUGH MEANS NO VIDEO RE-ENCODE, NOT NO PROCESSING.  This is the easy misreading and it would strand files in their source container.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given statistics.  An SD AVI rip arriving in 'complete/' still as an .avi is a bug.
 
@@ -597,6 +634,10 @@ libx265, preset slow, crf 18, pix_fmt yuv420p10le
 -x265-params <aq>:psy-rd=2.0:psy-rdoq=1.0:deblock=-1,-1
 aq = aq-mode=4:tune=grain on film sources, aq-mode=3 otherwise
 ```
+
+HDR SIGNALLING TRAVELS INSIDE THE PARAMS STRING TOO.  For an HDR source 'x265_hdr_params' appends 'colorprim', 'transfer', 'colormatrix', 'range=limited', 'hdr10=1', 'master-display' from the ST 2086 figures and 'max-cll' from the light levels, taking the bitstream figures first and the container's second.  Measured in the image on 2026-09-10:  ffmpeg 7.1.5's libx265 wrapper carries all of that through on its own, from either surface, so the params are a guard against a wrapper that stops doing so rather than the mechanism.  'hdr10-opt' is deliberately NOT passed:  it changes chroma QP offsets and is a tuning decision, not signalling.
+
+DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS, NOT A NEW BINARY.  Measured on a Barbarella segment:  '-dolbyvision auto', which is what an unmodified argv gets, silently drops the RPU with no error and no DOVI record in the output.  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD".  '-dolbyvision 1' with 'vbv-maxrate' and 'vbv-bufsize' carries the RPU intact, container record and per-frame data both.  So for a DV title 'build_command' passes '-dolbyvision 1' and 'X265_DV_VBV_KBPS' for both VBV figures, and the Dockerfile build gate asserts the wrapper has the option.  THE VBV PAIR IS A DOCUMENTED DEVIATION FROM "DO NOT RETUNE THESE".  x265 will not encode a Dolby Vision profile without HRD, and HRD needs VBV, which caps the rate control for that one path.  40000 kbps is a starting point sized to sit above anything a 1080p CRF 18 encode produces;  it is unmeasured against a real DV encode because, per gate 1, none has happened.
 
 THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to the same '-x265-params' string, and 'lp=' to '-svtav1-params', from ENCODE_THREADS divided by CPU_SLOTS.  The quality settings above are settled by measurement and must not be touched;  the thread count is derived from the environment and is expected to differ between deployments.  A built command that carries 'pools=' has not been retuned.
 
@@ -681,6 +722,10 @@ WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet 
 
 TRAP:  a decode scan does NOT catch dropped audio.  Surviving packets are valid and there is simply a hole in the timeline.  The reference defect, 193 gaps and roughly 150 seconds of missing audio, passed a clean decode.
 
+TRAP:  A CONTAINER-LEVEL PROBE IS NOT EVIDENCE OF ABSENCE.  A Matroska file can declare no HDR metadata in its Colour element while its SEI carries all of it, and '-show_streams' only ever sees the element.  Saving Private Ryan in the library is the reference case.  Section 12 records the two-surface probe this forced.
+
+'_verify' COLLECTS, IT DOES NOT RAISE ON THE FIRST OBJECTION.  Duration drift, the packet-count equality, the statistics floor and readiness are all evaluated and the title holds once with every problem named, or is forced past all of them together with each recorded in the stage history.  Readiness at VERIFIED also carries the HDR invariant from section 12:  nothing the source declared or carried is absent from the output's container.
+
 ### Cropdetect
 
 TRAP, AND IT SILENTLY INVALIDATES WHOLE AUDITS:  cropdetect's 'limit' is read in the source's NATIVE BIT DEPTH, not normalised to 8-bit.  The usual limit=24 is correct for yuv420p, but against a 10-bit source it means 24 of 1023, an 8-bit equivalent of about 6, which sits below video black at 16.  Bars are then never detected and every 10-bit file reports full-frame no matter what it contains.
@@ -735,9 +780,9 @@ A FILE THAT GREW AFTER A LANGUAGE STRIP.  See section 13.
 
 Files carrying Dolby Vision survive a '-c copy' remux intact, including the DOVI configuration record, dv_profile, dv_level, rpu_present_flag, bl_present_flag and any mastering display metadata.  Verified before and after a language strip on two Profile 8 Level 3 titles.
 
-A DV title is NEVER AV1-encoded.  Router gate 3 sends it to libx265 on every setting, which is what preserves the RPU through an encode.  Profiles 5 and 8 both take that path.
+A DV title is NEVER AV1-encoded, and in practice is never encoded at all.  Every Dolby Vision profile is HEVC or AV1, so gate 1 passes it through before gate 3 is reached;  gate 1 is what preserves the RPU, and gate 3 is a backstop that no real file has taken.  Should one ever reach the encoder, section 14 records the measured mechanism:  ffmpeg 7.1's libx265 wrapper carries the RPU natively with '-dolbyvision 1' and a VBV pair, and drops it silently on the 'auto' default.  No extraction tool is in the image and none is needed.
 
-Detection is from the v:0 side data list, reading dv_profile and rpu_present_flag.  Plain HDR10 with no RPU is not Dolby Vision and encodes normally; AV1 carries HDR10 static metadata correctly.
+Detection is from the v:0 side data list, reading dv_profile and rpu_present_flag.  That is the CONTAINER's DOVI configuration record.  The probe also notes an RPU in the bitstream, and a file carrying one with no container record is held rather than repaired, because a header edit cannot write that record.  Plain HDR10 with no RPU is not Dolby Vision and encodes normally; AV1 carries HDR10 static metadata correctly.
 
 ## 19.  Single instance, locking and concurrency
 
@@ -932,7 +977,38 @@ MINLENGTH IS THE SETTING THAT MATTERS.  At the previous value of 600 a 10 minute
 
 WRONG-TITLE RIPS WERE CAUSED BY MINLENGTH, NOT DRM.  The Cars disc reported 8 titles, not 99, so PREVENT_99 was never in play.  Every 'HB_*' setting does nothing while SKIP_TRANSCODE is true, because HandBrake never runs.
 
-## 27.  Out of scope
+## 27.  The library audit
+
+A BACKGROUND SWEEP FOR EVERY DEVIATION THE PASSTHROUGH PATH CAN CORRECT, AND NOTHING THAT NEEDS AN ENCODE.  'audit.Auditor' is a thread beside the watcher.  It walks the mounted libraries with 'os.walk', never glob, opens files read only, and assesses each against exactly the set the passthrough path repairs on every title:
+
+```
+container not Matroska                    remux
+foreign audio or subtitle tracks          language strip
+audio default count not exactly 1         flag repair
+non-forced subtitle marked default        flag repair
+video track language not eng              flag repair
+tag block missing, inverted or flattened  tag rewrite
+tag TITLE does not transform to the name  tag rewrite
+segment title differs from the tag TITLE  mkvpropedit
+statistics missing or stale               statistics refresh
+HDR declaration short of the bitstream    mkvpropedit, section 12
+```
+
+Resolution, bit depth, codec, letterbox and PAL speed-up are never findings.  They need an encode, and an encode of already-encoded media is the loss gate 1 exists to prevent.
+
+THE NAMING CHECK NEEDS NO PROVIDER.  Section 9's rule is that the filename is the tag's TITLE run through 'titles.to_filename', so the audit applies the transform to the tag and compares it with the name.  It cannot check the reverse and does not try.
+
+IT IS THROTTLED AND IT SKIPS WHAT HAS NOT CHANGED.  'AUDIT_INTERVAL' seconds between files, default 2, so a first pass over 2934 files takes about two hours and never competes with a staging copy for the array.  A 'findings' table in 'state.db' records path, size and mtime for every file assessed, so a repeat pass is mostly 'stat' calls.  A pass restarts 'AUDIT_SWEEP_INTERVAL' seconds after the last one finished, default 3600.  'AUDIT_INTERVAL=0' disables it, and it never starts when no library is mounted.
+
+REPAIR IS BY RUNNING THE FILE THROUGH THE PIPELINE.  Each finding carries a copy action, 'POST /api/audit/<id>/import', which copies the library file into 'import/' and lets the ordinary chain do the rest.  That is a read of the library and a write under the writable root, so section 2 gains no exception.  The copy lands as '<name>.part' and is renamed, because the watcher ignores '.part';  it refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in flight.  The loop still ends by hand:  the repaired file lands in 'complete/' and the operator moves it into the library.
+
+A COPIED TITLE MUST NOT COMPARE AGAINST ITSELF.  It resolves to the same provider ID as the file it came from, so '_find_incumbent' would match that file, every gate would read equal, and section 8 would hold it as a no-vote pair.  The finding records the import path, the watcher links the new title to it and stores 'origin_path' on the row, and '_find_incumbent' skips that one realpath.  Only the comparison is skipped;  screening and readiness still apply.  This does not use 'overridden', which section 7 makes far broader than this needs.
+
+The cost is worth knowing.  The three HDR titles needing repair on 2026-09-10 are 5.6, 6.3 and 9.8 GiB, each copied to 'import/', staged, and moved to 'complete/', roughly 65 GiB of I/O and a 29 GiB free-space floor for the largest, to correct a few hundred bytes of Colour header.  What that buys is that the file passes every gate on the way through and comes out verified by the same 'readiness' check as any other title, which a direct header edit does not.
+
+The dashboard shows a third corner counter, 'Library findings', opening the same list dialog the other two use, with the sweep status in the dialog header and a Details table per finding in the shape of the Compare dialog:  container beside bitstream for the HDR rows, expected beside actual for the rest, the differing rows marked.  Only correctable checks appear.
+
+## 28.  Out of scope
 
 Not in this repository, and adding them needs a decision rather than a commit:
 

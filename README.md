@@ -13,7 +13,7 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
          ->  tag  ->  readiness  ->  encode  ->  verify  ->  complete/
 ```
 
-Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own before it stops and waits for a person.
+Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
 
 Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.
 
@@ -42,9 +42,9 @@ Three further values sit outside the pipeline.
 
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
-| HELD | needs a decision | A gate failed and the title is waiting for you.  The reason is written out, and the decision queue offers Retry, Force through and Discard. |
+| HELD | needs a decision | A gate failed and the title is waiting for you.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
 | QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'. |
-| FAILED | failed | An unexpected error.  Nothing was moved or deleted. |
+| FAILED | failed | A mechanical failure:  an unreadable probe, a remux or encoder that exited non-zero, or a publish that could not write.  Nothing was moved or deleted, and no output exists, so Force through cannot apply and is not offered;  Retry and Discard are. |
 
 A row marked "files gone" refers to a title whose files you have since removed by hand.  It is a record of what the pipeline did rather than something still on disk, and the Forget button removes the record.  Forget only removes a database row;  it never deletes a file.
 
@@ -69,6 +69,7 @@ app/            the pipeline: one module per concern
   provider.py     Wikidata, TMDB and TVDB lookups
   state.py        SQLite store, one row per title
   webui.py        JSON API and dashboard
+  audit.py        the background library sweep
   static/         the dashboard page
 Dockerfile      debian:trixie-slim plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri
@@ -95,11 +96,38 @@ Without a library mount the incumbent comparison is skipped and every title is t
 
 The whole per-title work area lives on the encode mount, not just the encode.  A title is copied in once, then remuxed, tagged, encoded and verified there, and the finished file is moved out once.  That is two crossings of the slow filesystem in exchange for keeping three or four full-file rewrites on fast storage.  Startup compares the filesystem of the encode and complete mounts and warns when they match, so a fast disk that silently landed on the same filesystem is visible rather than mysterious.
 
+## Naming
+
+The Matroska tag carries the provider's title verbatim, character for character, punctuation and all.  The filename is that same title with only the unsafe characters removed, plus the control range:
+
+```
+/   \   :   *   ?   "   <   >   |
+```
+
+Nothing is re-worded, abbreviated, reordered or truncated.  Those nine are what SMB forbids, and the libraries are served over SMB, so SMB is the binding constraint rather than the filesystem.
+
+A colon is REMOVED rather than turned into a dash, so 'Avengers: Endgame' is filed as 'Avengers Endgame'.  An em dash or en dash becomes ' - ', and a forward slash inside a title becomes '-'.  Everything else is kept, including parentheses, brackets, commas, apostrophes, ampersands and accented letters.  The parentheses and brackets are structural:  '(Year)' appears in every movie name, and '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' are what the incumbent lookup keys on.
+
+```
+Title (Year) [tmdbid-N] [imdbid-ttN]/Title (Year).mkv
+Show Name (Year) [tvdbid-N] [tmdbid-N]/Season NN/Show Name - SNNENN - Episode Title.mkv
+```
+
+A file covering two episodes takes the range form, 'Show - S05E01-E02 - Kidnapping.mkv', because naming it as only the first makes Jellyfin report the second as missing.  A multi-part episode uses ', Part 1' rather than whichever marker the provider happened to use.
+
+The longer form that repeats the whole folder name inside the filename is for editions and nothing else:
+
+```
+Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644]/Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644] - Assembly Cut.mkv
+```
+
+The transform runs one way.  A filename can always be derived from a tag;  a tag can never be derived from a filename, because the information needed has already been discarded.  Where a tag and a filename differ by unsafe characters alone, that is expected and is not a defect.
+
 ## Environment
 
 | Name | Default | Purpose |
 |---|---|---|
-| MEDIA_ROOT | /media | required rw, the one mount everything derives from |
+| MEDIA_ROOT | /media | the one mount everything derives from;  defaulted rather than demanded, then validated to be a mounted directory |
 | MEDIA_ENCODE | <root>/encode | optional, per-title work area on faster storage |
 | MEDIA_CONFIG | <root>/config | optional, state.db, lock, cache, logs |
 | LIBRARY_MOVIES | unset | ro movie library |
@@ -107,7 +135,7 @@ The whole per-title work area lives on the encode mount, not just the encode.  A
 | CERT_DIR | /certs | ro, holds the TLS certificate and key |
 | TLS_CERT_FILE | fullchain.pem | certificate name within CERT_DIR |
 | TLS_KEY_FILE | privkey.pem | private key name within CERT_DIR |
-| PUID / PGID | required | identity the supervisor drops to |
+| PUID / PGID | required | identity the supervisor drops to;  enforced by 'entrypoint.sh', which refuses to start without both |
 | RENDER_GID | unset | supplementary group for /dev/dri, GPU off if unset |
 | RENDER_NODE | /dev/dri/renderD128 | render node the GPU probe and QSV encoder use |
 | OUTPUT_CODEC | hevc | hevc or av1 |
@@ -126,6 +154,8 @@ The whole per-title work area lives on the encode mount, not just the encode.  A
 | LOCK_WAIT_INTERVAL | 15 | how often to retry the instance lock |
 | GRAIN_THRESHOLD | 0.18 | denoise delta above which a source counts as grainy |
 | LOG_LEVEL | info | 'info' records what happened, 'debug' adds why |
+| AUDIT_INTERVAL | 2 | seconds between library files audited;  0 disables the sweep |
+| AUDIT_SWEEP_INTERVAL | 3600 | seconds between passes over the libraries |
 
 Every one of these is echoed into the log and onto /api/status at startup, so what the container thinks it was configured with is always visible without exec-ing into it.
 
@@ -164,11 +194,15 @@ x265 is the default because no Apple TV decodes AV1 in hardware.  AV1 is fully b
 
 Gate 3 exists because an AV1 re-encode discards the Dolby Vision RPU.  Those titles always take the x265 path, on any setting.
 
+An HDR source that reaches an encoder carries its colour, mastering display and content light level into the x265 params, and a Dolby Vision source carries its RPU through with ffmpeg's native '-dolbyvision' and a VBV pair, no extraction tool involved.  In practice neither happens:  HDR and Dolby Vision material is HEVC, and gate 1 passes it through untouched.
+
+Gate 5 is the one that can produce an encoder the table does not name.  At startup 'vainfo' must report VAProfileAV1Profile0 with the encode entrypoint;  a failed probe does not crash the container, it marks the GPU degraded, and gate 5 then routes to libsvtav1 on the CPU instead of av1_qsv.  At the hevc default a degraded GPU changes nothing at all, which is the point:  the GPU cannot break the pipeline.  Every encode logs which encoder actually ran, so a GPU that has quietly stopped being used is visible rather than silent.
+
 SD is decided on display height, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions.
 
 PASSTHROUGH MEANS NO VIDEO RE-ENCODE.  It does not mean no processing.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given track statistics.  An SD AVI rip arriving in 'complete/' still as an .avi would be a bug.
 
-Grain is detected automatically, by encoding a 20 second sample twice, once clean and once through a light denoise, and comparing the two sizes.  The ratio is logged for every title so a bad threshold is visible rather than silent.  An 'encode.job' sidecar beside the source overrides it:
+Grain is detected automatically, by encoding a 20 second sample twice, once clean and once through a light denoise, and comparing the two sizes.  The ratio is logged for every title so a bad threshold is visible rather than silent.  An 'encode.job' sidecar overrides it.  It is read from the directory holding the source rather than from a per-title path, so one file governs every source alongside it:  convenient for a season, surprising for a mixed drop.
 
 ```
 film=1                  force the grain path, film=0 forces the clean path
@@ -176,6 +210,60 @@ codec=av1               per-title output codec
 crf=17                  per-title quality target
 crop=1920:804:0:138     skip cropdetect and use this
 ```
+
+## Comparison gates
+
+Before any encode, an arrival is compared against whatever the library already holds.  Seven gates, in order:
+
+```
+1  HDR or Dolby Vision present    losing it is never an upgrade
+2  display pixel count            width * SAR / height, never stored dimensions
+3  baked-in letterbox             larger real picture area wins
+4  audio maximum channel count    5.1 beats 2.0
+5  bit depth                      10-bit beats 8-bit
+6  video bitrate                  weighted for codec efficiency
+7  source pedigree                remux > encode > web, tiebreak only
+```
+
+EVERY GATE IS EVALUATED AND THE VOTES ARE TALLIED.  The first difference does not decide.  Every vote a win and the title proceeds to the encode.  Every vote a loss and it goes to quarantine with no encode spent on it.  Votes in both directions go to hold, behind the Compare button, and so does a pair on which no gate voted at all.  Nothing resolves a split verdict automatically, because there is no correct automatic answer for a file that is better in one respect and worse in another.  The two exits from that hold are Force through and Discard, and both are yours.
+
+Gate 1 is asymmetric and is the only short circuit.  An arrival that LACKS HDR or Dolby Vision the incumbent carries is an immediate loss and no further gate runs.  An arrival that GAINS it casts an ordinary win vote and can be contradicted into review.
+
+Gate 2 defers to gate 3 whenever either side carries baked-in bars, because display pixel count counts black as picture.  A correctly cropped 1920x800 arrival and an incumbent stored 1920x1080 with 280 px of bars hold identical real picture, and gate 2 on its own would decide that on a margin that is entirely black.
+
+Gate 6 is comparative only.  There is no minimum bitrate anywhere in this pipeline and none is to be added.  Raw figures are weighted by codec first, h264 at 1.0, HEVC at 1.7 and AV1 at 2.2, because without the weighting the gate systematically favours the less efficient codec:  a surviving h264 source would rate above the HEVC this pipeline produced from it, and the pipeline would quarantine its own output.
+
+Gate 7 is a tiebreak rather than a vote.  Pedigree is inferred from release naming, which is exactly the kind of signal the rest of this pipeline distrusts, so it is consulted only when no measurable gate voted and it is marked as a weak signal when it decides.
+
+Gates 2, 3 and 6 need both sides to be measurable.  Where one side is missing, the gate casts no vote and the skip is recorded rather than counted as a tie.  The tolerances are 5 percent on pixel count and 25 percent on bitrate;  the bitrate figure is a starting point and has not been calibrated against this library.
+
+The table behind the Compare button carries every attribute the pipeline measured, not only the seven it gates on.  A row that differs with no gate against it is marked as such, and that is the row worth looking at:  it is where the pipeline saw a difference and had no rule for it.
+
+The incumbent is read, compared against and left alone.  Nothing in the container writes to a library.
+
+HDR is compared on presence at gate 1, and on declaration in the table.  A Matroska file states its mastering display and content light level twice, in the bitstream as SEI and in the container's Colour element, and the two can disagree:  eight HDR titles in one library all carried the metadata in the bitstream while three declared none of it in the container.  The pipeline probes both surfaces, repairs a container that under-declares its own bitstream with a header edit on the way through, and holds any title whose output declares less than its source carried.  The declaration rows appear in the Compare table without a gate number, so a difference there is one of the marked rows worth looking at rather than a vote.
+
+## Identification and the internet
+
+A provider ID is never guessed.  Resolution goes through Wikidata and then verifies against the TMDB or TVDB page before an ID is written anywhere, because Wikidata's provider IDs can be flat wrong.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, since TVDB governs episode titles and numbering.  Requests are spaced about three seconds apart, and every answer is cached on disk under 'config/cache', which is consulted before any request is made.
+
+A file that has already been through this pipeline, or that came back out of a library, states what it is:  embedded tags, then ids in the filename, then ids in the folder, then the segment title are all tried before the cleaned filename is.  A fresh disc rip has none of those, so for that case the filename is all there is.
+
+Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  A fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, and a title that cannot be identified at all holds.
+
+THERE IS NO OFFLINE MODE, and this is the one that reads as a hang.  A container with no outbound access cannot identify anything, so every title holds on the backoff described above and then waits for a person.  That is the intended behaviour rather than a fault, but it is worth knowing before pointing this at an isolated network.
+
+A title that cannot be identified holds, and Force through carries it on without an ID rather than guessing one.  A forced unidentified title keeps the name it arrived with, extension changed to '.mkv', carries a tag block holding TITLE only, and lands flat in 'complete/' instead of in a provider-named folder, so it is visibly unlike finished work.
+
+Cover art is a by-product of the same lookup.  The poster comes off the TMDB page already fetched to verify the title, with TVDB as the fallback for a show that resolved without a TMDB id, and there is no API key involved.  Posters are cached under 'config/cache/posters' and served from '/api/poster', so the browser never contacts an image CDN and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch that fails serves 404 and the tile falls back to text;  artwork is never allowed to become a failure the pipeline notices.
+
+## Library audit
+
+A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a tag TITLE that does not transform to the filename, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  Resolution, bit depth, codec and letterbox are never findings.
+
+It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  It never starts when no library is mounted.
+
+Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in flight.
 
 ## One instance at a time
 
@@ -191,17 +279,25 @@ No authentication.  Anyone who can reach the port can drive it, including forcin
 
 ```
 GET  /                            dashboard
-GET  /api/status                  config, GPU state, encode space, queue depth, stage counts
+GET  /api/status                  config, GPU state, encode space, queue depth, stage counts,
+                                  encoder slot occupancy, uptime, and live percent, ETA and
+                                  speed for every running encode
 GET  /api/titles                  every title
 GET  /api/titles/<id>             one title with its stage history and comparison table
-GET  /api/held                    the decision queue
+GET  /api/held                    the decision queue, held and failed titles together
+GET  /api/poster/<id>             cached cover art, 404 when there is none
 GET  /api/logs                    log tail
+GET  /api/audit                   sweep status and every library finding
+POST /api/audit                   start a sweep now
+POST /api/audit/<id>/import       copy that finding's file into import/ for repair
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
+A strip along the top carries the output codec, the GPU state, free space in the encode area, whether a library is mounted and a DRY_RUN badge, so a degraded GPU or an unmounted library is visible without opening anything.
+
 The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters for quarantined files and failed jobs in the lower right.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
 
-Clicking any tile opens its detail:  stage, provider ids, the reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard.  The two counters are clickable and list what is in them, so a rejected title stays inspectable.
+Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The three counters are clickable and list what is in them:  quarantined files, failed jobs, and library findings, the last with a Details table per file and an Import action per row.
 
 A television tile opens the episode list instead.  Every row carries the same decisions as a tile, and the header carries them for the whole season at once, so clearing a held season is one action rather than one per episode.  A season action closes the list, because there is nothing left in it to show.
 
@@ -230,14 +326,13 @@ Run it against a throwaway tree first:
 
 ```
 docker run --rm -e PUID=1000 -e PGID=1000 -e DRY_RUN=1 \
-  -v /tmp/testtree/import:/media/import \
-  -v /tmp/testtree/encode:/media/encode \
-  -v /tmp/testtree/complete:/media/complete \
-  -v /tmp/testtree/hold:/media/hold \
-  -v /tmp/testtree/config:/media/config \
+  -e POLL_INTERVAL=15 -e MTIME_QUIET=30 -e LOG_LEVEL=info \
+  -v /tmp/testtree:/media \
   -v /srv/certs:/certs:ro \
   -p 443:443 mediaimport:local
 ```
+
+ONE ROOT MOUNT, DELIBERATELY.  'import', 'complete', 'complete/.quarantine' and 'hold' are created underneath it at startup, and a move between two of them is then a rename rather than a copy.  Mounting them individually turns every one of those moves into a copy at best;  at worst 'rename' refuses outright with EXDEV, because Linux will not rename across two mount points even when both sides are the same device.
 
 DRY_RUN logs every intended move, encode and quarantine and performs none of them.
 

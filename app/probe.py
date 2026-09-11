@@ -9,6 +9,24 @@ FFPROBE = os.environ.get("FFPROBE", "ffprobe")
 MKVMERGE = os.environ.get("MKVMERGE", "mkvmerge")
 
 KEEP_LANGS = ("eng", "en", "und")
+VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
+
+BITSTREAM_SAMPLE_FRAMES = 12
+MASTERING_SIDE_DATA = "Mastering display metadata"
+CONTENT_LIGHT_SIDE_DATA = "Content light level metadata"
+DOVI_SIDE_DATA = "DOVI configuration record"
+CHROMATICITY_TOLERANCE = 1e-4
+LUMINANCE_TOLERANCE = 1e-3
+HDR_DECLARATIONS = ("mastering_display", "content_light", "dolby_vision")
+BITSTREAM_KEY = {
+    "mastering_display": "mastering_bitstream",
+    "content_light": "content_light_bitstream",
+    "dolby_vision": "dv_in_bitstream",
+}
+MASTERING_KEYS = (
+    "red_x", "red_y", "green_x", "green_y", "blue_x", "blue_y",
+    "white_point_x", "white_point_y", "min_luminance", "max_luminance",
+)
 
 DEPTH_BY_PIX_FMT_SUFFIX = (
     ("12le", 12),
@@ -160,6 +178,10 @@ def probe(path):
     if video is None:
         raise ProbeError("no decodable video stream in %s" % path)
 
+    if video["hdr"]:
+        video.update(bitstream_hdr(path))
+        video["hdr_declaration_gap"] = hdr_declaration_gap(video)
+
     container = {
         "video": video,
         "cover_art": cover_art,
@@ -194,6 +216,11 @@ def probe(path):
         video.get("dolby_vision"), container["chapters"],
         container["foreign_tracks"] or "none",
     )
+    if video.get("hdr_declaration_gap"):
+        log.info(
+            "%s under-declares its HDR metadata: container lacks %s carried in the bitstream",
+            os.path.basename(str(path)), ", ".join(video["hdr_declaration_gap"]),
+        )
     return Probe(path, data, container)
 
 
@@ -236,9 +263,16 @@ def _video_summary(s):
         "color_space": s.get("color_space"),
         "language": ((s.get("tags") or {}).get("language") or "und").lower(),
         "hdr": _is_hdr(s),
+        "hdr_format": _hdr_format(s),
         "colour_tagged": _is_colour_tagged(s),
         "dolby_vision": dv is not None,
         "dv": dv,
+        "mastering_display": _mastering_display(s),
+        "content_light": _content_light(s),
+        "mastering_bitstream": None,
+        "content_light_bitstream": None,
+        "dv_in_bitstream": False,
+        "hdr_declaration_gap": [],
     }
 
 
@@ -327,6 +361,77 @@ def _is_hdr(s):
     )
 
 
+def _hdr_format(s):
+    trc = (s.get("color_transfer") or "").lower()
+    if trc == "smpte2084":
+        return "hdr10"
+    if trc == "arib-std-b67":
+        return "hlg"
+    if _is_hdr(s):
+        return "bt2020"
+    return "none"
+
+
+def _side_data(s, side_data_type):
+    for side in s.get("side_data_list") or []:
+        if side.get("side_data_type") == side_data_type:
+            return side
+    return None
+
+
+def _mastering_from(side):
+    if not side:
+        return None
+    return {key: _ratio(str(side.get(key) or ""), 0.0) for key in MASTERING_KEYS}
+
+
+def _content_light_from(side):
+    if not side:
+        return None
+    try:
+        return {
+            "max_content": int(side.get("max_content") or 0),
+            "max_average": int(side.get("max_average") or 0),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def _mastering_display(s):
+    return _mastering_from(_side_data(s, MASTERING_SIDE_DATA))
+
+
+def _content_light(s):
+    return _content_light_from(_side_data(s, CONTENT_LIGHT_SIDE_DATA))
+
+
+def _same_mastering(a, b):
+    if not a or not b:
+        return False
+    for key in MASTERING_KEYS:
+        tolerance = LUMINANCE_TOLERANCE if "luminance" in key else CHROMATICITY_TOLERANCE
+        if "luminance" in key:
+            scale = max(abs(a.get(key) or 0.0), abs(b.get(key) or 0.0), 1e-9)
+            if abs((a.get(key) or 0.0) - (b.get(key) or 0.0)) / scale > tolerance:
+                return False
+        elif abs((a.get(key) or 0.0) - (b.get(key) or 0.0)) > tolerance:
+            return False
+    return True
+
+
+def hdr_declaration_gap(video):
+    gap = []
+    mastering = video.get("mastering_bitstream")
+    if mastering and not _same_mastering(mastering, video.get("mastering_display")):
+        gap.append("mastering_display")
+    light = video.get("content_light_bitstream")
+    if light and light != video.get("content_light"):
+        gap.append("content_light")
+    if video.get("dv_in_bitstream") and not video.get("dolby_vision"):
+        gap.append("dolby_vision")
+    return gap
+
+
 def _is_colour_tagged(s):
     prim = (s.get("color_primaries") or "").lower()
     return bool(prim) and prim not in ("unknown", "unspecified", "n/a")
@@ -378,6 +483,39 @@ def _stream_summary(s):
 
 
 #----- Direct stream queries
+def bitstream_hdr(path, frames=BITSTREAM_SAMPLE_FRAMES):
+    data = ffprobe_json(
+        path,
+        [
+            "-select_streams", "v:0",
+            "-read_intervals", "%%+#%d" % int(frames),
+            "-show_entries", "frame=pts:frame_side_data",
+        ],
+    )
+    mastering = None
+    light = None
+    dv = False
+    for frame in data.get("frames") or []:
+        for side in frame.get("side_data_list") or []:
+            kind = side.get("side_data_type") or ""
+            if kind == MASTERING_SIDE_DATA and mastering is None:
+                mastering = _mastering_from(side)
+            elif kind == CONTENT_LIGHT_SIDE_DATA and light is None:
+                light = _content_light_from(side)
+            elif "Dolby Vision" in kind:
+                dv = True
+    log.debug(
+        "bitstream of %s: mastering=%s content_light=%s dolby_vision=%s over %d frame(s)",
+        os.path.basename(str(path)), mastering is not None, light is not None, dv,
+        len(data.get("frames") or []),
+    )
+    return {
+        "mastering_bitstream": mastering,
+        "content_light_bitstream": light,
+        "dv_in_bitstream": dv,
+    }
+
+
 def video_duration(path):
     data = ffprobe_json(path, ["-select_streams", "v:0", "-show_entries", "stream=duration"])
     streams = data.get("streams") or []

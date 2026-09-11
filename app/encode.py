@@ -12,6 +12,10 @@ AQ_FILM = "aq-mode=4:tune=grain"
 SDR_PRIMARIES_SD = "smpte170m"
 SDR_PRIMARIES_HD = "bt709"
 X265_SDR_COLOUR = "colorprim=%s:transfer=%s:colormatrix=%s:range=limited"
+X265_HDR_COLOUR = "colorprim=%s:transfer=%s:colormatrix=%s:range=limited:hdr10=1"
+X265_DV_VBV_KBPS = 40000
+CHROMATICITY_UNIT = 50000
+LUMINANCE_UNIT = 10000
 
 X265_PRESET = "slow"
 SVTAV1_PRESET = "4"
@@ -212,18 +216,70 @@ def _tail_args():
 
 
 def _sdr_ffmpeg_colour_args(primaries):
+    return _ffmpeg_colour_args(primaries, primaries, primaries)
+
+
+def _ffmpeg_colour_args(primaries, transfer, matrix):
     return [
         "-color_primaries", primaries,
-        "-color_trc", primaries,
-        "-colorspace", primaries,
+        "-color_trc", transfer,
+        "-colorspace", matrix,
         "-color_range", "tv",
     ]
+
+
+def hdr_colour(video):
+    if not video.get("hdr"):
+        return None
+    prim = (video.get("color_primaries") or "").lower()
+    trc = (video.get("color_transfer") or "").lower()
+    spc = (video.get("color_space") or "").lower()
+    if not (prim and trc and spc):
+        return None
+    return prim, trc, spc
+
+
+def _master_display(md):
+    def c(value):
+        return int(round(float(value or 0.0) * CHROMATICITY_UNIT))
+
+    def l(value):
+        return int(round(float(value or 0.0) * LUMINANCE_UNIT))
+
+    return "G(%d,%d)B(%d,%d)R(%d,%d)WP(%d,%d)L(%d,%d)" % (
+        c(md.get("green_x")), c(md.get("green_y")),
+        c(md.get("blue_x")), c(md.get("blue_y")),
+        c(md.get("red_x")), c(md.get("red_y")),
+        c(md.get("white_point_x")), c(md.get("white_point_y")),
+        l(md.get("max_luminance")), l(md.get("min_luminance")),
+    )
+
+
+def x265_hdr_params(video):
+    colour = hdr_colour(video)
+    if colour is None:
+        return None
+    parts = [X265_HDR_COLOUR % colour]
+    md = video.get("mastering_bitstream") or video.get("mastering_display")
+    if md:
+        parts.append("master-display=%s" % _master_display(md))
+    cl = video.get("content_light_bitstream") or video.get("content_light")
+    if cl:
+        parts.append("max-cll=%d,%d" % (int(cl.get("max_content") or 0), int(cl.get("max_average") or 0)))
+    if video.get("dolby_vision"):
+        parts.append("vbv-maxrate=%d:vbv-bufsize=%d" % (X265_DV_VBV_KBPS, X265_DV_VBV_KBPS))
+    return ":".join(parts)
 
 
 #----- Command builders
 def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     if decision.is_passthrough:
         raise ValueError("build_command called on a passthrough decision")
+    if video.get("dolby_vision") and decision.encoder != LIBX265:
+        raise ValueError(
+            "Dolby Vision RPU cannot be carried by %s, only libx265 preserves it"
+            % decision.encoder
+        )
 
     args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1"]
 
@@ -243,22 +299,29 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
         args += ["-vf", ",".join(filters)]
 
     stamp = sdr_stamp_primaries(video)
+    hdr = hdr_colour(video)
 
     if decision.encoder == LIBX265:
         aq = AQ_FILM if decision.grain else AQ_DEFAULT
         params = "%s:%s" % (aq, X265_COMMON)
         if stamp:
             params = "%s:%s" % (params, X265_SDR_COLOUR % (stamp, stamp, stamp))
+        elif hdr:
+            params = "%s:%s" % (params, x265_hdr_params(video))
         params = "%s:pools=%d" % (params, _threads(cfg))
         args += [
             "-c:v", "libx265",
             "-preset", X265_PRESET,
             "-crf", str(crf if crf is not None else cfg.crf),
             "-pix_fmt", "yuv420p10le",
+        ]
+        if video.get("dolby_vision"):
+            args += ["-dolbyvision", "1"]
+        args += [
             #----- colour travels inside the params string on this path, not as ffmpeg flags.
             "-x265-params", params,
         ]
-        if stamp:
+        if stamp or hdr:
             args += ["-color_range", "tv"]
 
     elif decision.encoder == LIBSVTAV1:
@@ -271,6 +334,8 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
         ]
         if stamp:
             args += _sdr_ffmpeg_colour_args(stamp)
+        elif hdr:
+            args += _ffmpeg_colour_args(*hdr)
 
     elif decision.encoder == AV1_QSV:
         args += [
@@ -280,6 +345,8 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
         ]
         if stamp:
             args += _sdr_ffmpeg_colour_args(stamp)
+        elif hdr:
+            args += _ffmpeg_colour_args(*hdr)
 
     else:
         raise ValueError("unknown encoder %r" % decision.encoder)

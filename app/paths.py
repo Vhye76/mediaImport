@@ -128,6 +128,9 @@ class Layout:
     def encode_free_bytes(self):
         return shutil.disk_usage(self.encode).free
 
+    def root_free_bytes(self):
+        return shutil.disk_usage(self.media_root).free
+
     def has_headroom(self, source_bytes):
         need = int(source_bytes * self.cfg.encode_headroom)
         free = self.encode_free_bytes()
@@ -241,6 +244,32 @@ class Layout:
     def quarantine_path(self, src):
         base = os.path.basename(os.path.normpath(src))
         return self.unique_path(self.quarantine, base)
+
+    def copy_to_import(self, source):
+        source = _norm(source)
+        if self.is_read_only(source) is None:
+            raise WriteGuardError("refusing to import %s: it is not under a mounted library" % source)
+        size = os.path.getsize(source)
+        free = self.root_free_bytes()
+        if free < size:
+            raise OSError(
+                errno.ENOSPC,
+                "import area has %d bytes free, the copy needs %d" % (free, size),
+            )
+        destination = os.path.join(self.imports, os.path.basename(source))
+        if os.path.exists(destination):
+            raise FileExistsError("already present in import: %s" % destination)
+        self.assert_writable(destination)
+        self.guarded_makedirs(self.imports)
+        staging = destination + ".part"
+        try:
+            shutil.copy2(source, staging)
+            os.replace(staging, destination)
+        except BaseException:
+            self._discard_reservation(staging)
+            raise
+        log.info("copied %s into import for repair", os.path.basename(source))
+        return destination
 
     #----- Reporting
     def describe(self):

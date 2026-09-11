@@ -6,12 +6,12 @@ import threading
 import time
 import uuid
 
-from . import compare, encode, media, probe as probemod, provider as providermod
+from . import audit, compare, encode, media, probe as probemod, provider as providermod
 from . import standards, state, tags, titles
 
 log = logging.getLogger("orchestrator")
 
-VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
+VIDEO_EXTENSIONS = probemod.VIDEO_EXTENSIONS
 JOB_SIDECAR = "encode.job"
 
 
@@ -77,7 +77,15 @@ class Slots:
 
 #----- Stage outcomes
 class HoldError(RuntimeError):
-    pass
+    def __init__(self, reasons, stage=None):
+        self.reasons = state.normalise_reasons(
+            [{"stage": stage, "text": reasons}] if isinstance(reasons, str) else reasons
+        )
+        super().__init__("; ".join(e["text"] for e in self.reasons))
+
+
+def _reason(stage, text):
+    return {"stage": stage, "text": text}
 
 
 class QuarantineError(RuntimeError):
@@ -108,6 +116,7 @@ class Orchestrator:
         self._procs = set()
         self._procs_lock = threading.Lock()
         self._progress = {}
+        self.auditor = audit.Auditor(cfg, layout, store, self.stop_event)
 
     #----- Lifecycle
     def start(self):
@@ -127,6 +136,7 @@ class Orchestrator:
         t.start()
         self.workers.append(t)
         self.requeue_resumable()
+        self.auditor.start()
 
     def stop(self):
         self.stop_event.set()
@@ -244,6 +254,7 @@ class Orchestrator:
                             existing["id"], name, existing["stage"],
                         )
                         self.store.reset_for_reimport(existing["id"])
+                        self.store.link_import(existing["id"], path)
                         self.queue.put(existing["id"])
                     else:
                         log.debug(
@@ -253,6 +264,7 @@ class Orchestrator:
                     continue
                 title_id = self.store.upsert_source(path)
                 log.info("title %s detected %s", title_id, path)
+                self.store.link_import(title_id, path)
                 self.queue.put(title_id)
 
     def _stable(self, path):
@@ -293,9 +305,12 @@ class Orchestrator:
         try:
             container = self._probe(title_id, source)
             kind = self._classify(title_id, source, container)
-            self._screen(title_id, source, container, kind)
-            identity = self._identify(title_id, container, kind)
-            self._compare(title_id, container, identity, kind, source)
+            reasons = self._screen(title_id, source, container, kind)
+            identity, more = self._identify(title_id, container, kind, source)
+            reasons += more
+            reasons += self._compare(title_id, container, identity, kind, source)
+            if reasons:
+                raise HoldError(reasons)
             workdir, work = self._stage(title_id, source, job_id, container)
             work = self._remux(title_id, work, source)
             if not self.cfg.dry_run:
@@ -313,7 +328,7 @@ class Orchestrator:
                 self.store.record(title_id, state.PUBLISHED, "cleanup failed: %s" % exc)
         except HoldError as exc:
             log.warning("held: %s: %s", source, exc)
-            self.store.hold(title_id, str(exc))
+            self.store.hold(title_id, exc.reasons)
         except RetryLater as exc:
             row = self.store.get(title_id) or {}
             attempts = row.get("attempts") or 0
@@ -344,26 +359,41 @@ class Orchestrator:
         row = self.store.get(title_id)
         if row.get("overridden"):
             self.store.advance(title_id, state.SCREENED, "standards overridden by operator")
-            return
+            return []
         verdict = standards.screen(container, kind, path=source)
         if not verdict.ok:
-            raise HoldError("failed minimum standards: %s" % "; ".join(verdict.problems))
-        self.store.advance(title_id, state.SCREENED, "; ".join(verdict.warnings) or "passed")
-
-    def _identify(self, title_id, container, kind):
-        if self.provider is None:
-            raise HoldError("no provider configured, cannot resolve a provider ID")
-        row = self.store.get(title_id)
-        try:
-            identity = self.provider.identify(row, container, kind)
-        except providermod.RateLimited as exc:
-            raise RetryLater(str(exc))
-        except providermod.ProviderError as exc:
-            raise RetryLater("provider lookup failed: %s" % exc)
-        if identity is None:
-            raise HoldError(
-                "provider ID could not be resolved and must never be guessed"
+            self.store.record(
+                title_id, state.SCREENED, "failed minimum standards: %s" % "; ".join(verdict.problems)
             )
+            return [_reason(state.SCREENED, p) for p in verdict.problems]
+        self.store.advance(title_id, state.SCREENED, "; ".join(verdict.warnings) or "passed")
+        return []
+
+    def _identify(self, title_id, container, kind, source):
+        row = self.store.get(title_id)
+        identity = None
+        if self.provider is None:
+            problem = "no provider configured, cannot resolve a provider ID"
+        else:
+            try:
+                identity = self.provider.identify(row, container, kind)
+            except providermod.RateLimited as exc:
+                raise RetryLater(str(exc))
+            except providermod.ProviderError as exc:
+                raise RetryLater("provider lookup failed: %s" % exc)
+            problem = "provider ID could not be resolved and must never be guessed"
+        if identity is None:
+            if row.get("overridden"):
+                identity = self._unidentified(kind, source)
+                self.store.advance(
+                    title_id,
+                    state.IDENTIFIED,
+                    "unidentified, forced through under its source name %r" % identity["title"],
+                    title=identity["title"],
+                )
+                return identity, []
+            self.store.record(title_id, state.IDENTIFIED, problem)
+            return None, [_reason(state.IDENTIFIED, problem)]
         self.store.advance(
             title_id,
             state.IDENTIFIED,
@@ -379,7 +409,22 @@ class Orchestrator:
             tvdb=identity.get("tvdb"),
             poster_url=self._poster_url(kind, identity),
         )
-        return identity
+        return identity, []
+
+    @staticmethod
+    def _unidentified(kind, source):
+        stem = os.path.splitext(os.path.basename(str(source)))[0]
+        return {
+            "unidentified": True,
+            "title": titles.to_filename(stem),
+            "year": None,
+            "show": None,
+            "season": None,
+            "episode": None,
+            "tmdb": None,
+            "imdb": None,
+            "tvdb": None,
+        }
 
     def _poster_url(self, kind, identity):
         try:
@@ -392,6 +437,7 @@ class Orchestrator:
             log.debug("poster url lookup failed: %s", exc)
         return None
 
+    #----- Comparison and the library lookup
     def _compare(self, title_id, container, identity, kind, source):
         row = self.store.get(title_id)
         if row.get("overridden"):
@@ -399,19 +445,22 @@ class Orchestrator:
             self.store.advance(
                 title_id, state.COMPARED, "comparison overridden by operator"
             )
-            return
+            return []
+        if identity is None:
+            self.store.record(title_id, state.COMPARED, "skipped, no identity resolved")
+            return []
         if not self.layout.libraries:
             self.store.advance(
                 title_id, state.COMPARED, "no library mounted, comparison skipped"
             )
-            return
-        incumbent_path, route = self._find_incumbent(identity, kind)
+            return []
+        incumbent_path, route = self._find_incumbent(identity, kind, skip=row.get("origin_path"))
         if incumbent_path is None:
             log.info("title %s has no incumbent, treated as new: %s", title_id, route)
             self.store.advance(
                 title_id, state.COMPARED, "no incumbent, treated as new: %s" % route
             )
-            return
+            return []
         log.info(
             "title %s comparing against incumbent %s, %s",
             title_id, os.path.basename(incumbent_path), route,
@@ -420,7 +469,7 @@ class Orchestrator:
             incumbent = probemod.probe(incumbent_path).container
         except probemod.ProbeError as exc:
             self.store.advance(title_id, state.COMPARED, "incumbent unreadable: %s" % exc)
-            return
+            return []
         crops = self._crop_both(title_id, container, incumbent, source, incumbent_path)
         result = compare.compare(
             compare.measure(source, crop=crops[0]),
@@ -430,10 +479,12 @@ class Orchestrator:
         if result.is_loss:
             raise QuarantineError("not better than the incumbent: %s" % result.reason)
         if result.verdict == compare.AMBIGUOUS:
-            raise HoldError("comparison against the incumbent was inconclusive")
+            self.store.record(title_id, state.COMPARED, "inconclusive: %s" % result.reason)
+            return [_reason(state.COMPARED, "comparison against the incumbent was inconclusive: %s" % result.reason)]
         self.store.advance(
             title_id, state.COMPARED, "%s (incumbent %s)" % (result.reason, route)
         )
+        return []
 
     def _crop_both(self, title_id, incoming, incumbent, incoming_path, incumbent_path):
         new_video = incoming.get("video") or {}
@@ -463,13 +514,18 @@ class Orchestrator:
                 pairs.append(None)
         return pairs[0], pairs[1]
 
-    def _find_incumbent(self, identity, kind):
+    def _find_incumbent(self, identity, kind, skip=None):
         root = self.layout.libraries.get(kind)
         if not root or not os.path.isdir(root):
             return None, "no %s library mounted" % kind
         if kind == "movie":
-            return self._find_movie_incumbent(root, identity)
-        return self._find_tv_incumbent(root, identity)
+            found, route = self._find_movie_incumbent(root, identity)
+        else:
+            found, route = self._find_tv_incumbent(root, identity)
+        if found and skip and os.path.realpath(found) == os.path.realpath(skip):
+            log.info("incumbent is the file this title was imported from, comparison skipped")
+            return None, "the incumbent %s is this title's own origin, imported for repair" % route
+        return found, route
 
     @staticmethod
     def _folder_ids(name):
@@ -559,6 +615,7 @@ class Orchestrator:
                 return os.path.join(season_dir, entry)
         return None
 
+    #----- Staging, remux and tagging
     def _stage(self, title_id, source, job_id, container):
         size = container.get("size_bytes") or os.path.getsize(source)
         ok, need = self.layout.has_headroom(size)
@@ -616,6 +673,19 @@ class Orchestrator:
                 current = stripped
             media.fix_flags_and_language(current)
             detail.append("flags and languages normalised")
+            video = probemod.probe(current).video
+            if video.get("hdr"):
+                repair = media.repair_hdr_declaration(current, video)
+                if repair["repaired"]:
+                    detail.append(
+                        "hdr declaration repaired from the bitstream: %s"
+                        % ", ".join(repair["repaired"])
+                    )
+                if repair["unrepairable"]:
+                    detail.append(
+                        "hdr declaration cannot be repaired by a header edit: %s"
+                        % ", ".join(repair["unrepairable"])
+                    )
 
         self.store.advance(
             title_id, state.REMUXED, "; ".join(detail) or "no remux needed", work_path=current
@@ -623,6 +693,8 @@ class Orchestrator:
         return current
 
     def _tag_xml(self, identity, kind, carry):
+        if identity.get("unidentified"):
+            return tags.build_unidentified_xml(kind, identity["title"], carry)
         if kind == "movie":
             return tags.build_movie_xml(
                 identity["title"], identity["year"], identity["tmdb"], identity["imdb"], carry
@@ -651,12 +723,25 @@ class Orchestrator:
             self.store.advance(title_id, state.READY, "dry run")
             return
         ok, problems = tags.readiness(
-            work, kind, identity["title"], show=identity.get("show")
+            work, kind, identity["title"], show=identity.get("show"),
+            unidentified=bool(identity.get("unidentified")),
         )
         if not ok:
-            raise HoldError("failed readiness checks: %s" % "; ".join(problems))
+            if self._forced(title_id, state.READY, problems):
+                return
+            raise HoldError([_reason(state.READY, p) for p in problems])
         self.store.advance(title_id, state.READY, "readiness checks passed")
 
+    def _forced(self, title_id, stage, problems):
+        row = self.store.get(title_id) or {}
+        if not row.get("overridden"):
+            return False
+        detail = "forced past %s by operator: %s" % (stage, "; ".join(problems))
+        log.warning("title %s %s", title_id, detail)
+        self.store.advance(title_id, stage, detail)
+        return True
+
+    #----- Encoding
     def _encode(self, title_id, work, workdir, container, kind, source, identity, carry):
         row = self.store.get(title_id)
         override = read_sidecar(os.path.dirname(source))
@@ -709,9 +794,12 @@ class Orchestrator:
                 )
 
         target = os.path.join(workdir, "encoded.mkv")
-        cmd = encode.build_command(
-            decision, work, target, video, self.cfg, crop=crop, crf=override.get("crf")
-        )
+        try:
+            cmd = encode.build_command(
+                decision, work, target, video, self.cfg, crop=crop, crf=override.get("crf")
+            )
+        except ValueError as exc:
+            raise HoldError(str(exc), stage=state.ENCODING)
 
         if self.cfg.dry_run:
             log.info("title %s DRY RUN would encode with: %s", title_id, " ".join(cmd))
@@ -764,15 +852,17 @@ class Orchestrator:
         )
         return target
 
+    #----- Verification and publication
     def _verify(self, title_id, work, source, identity, kind):
         if self.cfg.dry_run:
             self.store.advance(title_id, state.VERIFIED, "dry run")
             return
         notes = []
+        problems = []
         src_duration = probemod.video_duration(source)
         out_duration = probemod.video_duration(work)
         if src_duration and out_duration and abs(src_duration - out_duration) > 2.0:
-            raise HoldError(
+            problems.append(
                 "video stream duration moved by %.1fs, output may be truncated"
                 % (out_duration - src_duration)
             )
@@ -780,7 +870,7 @@ class Orchestrator:
         packets_in = media.packet_count(source)
         packets_out = media.packet_count(work)
         if packets_in and packets_out and packets_in != packets_out:
-            raise HoldError(
+            problems.append(
                 "video packet count changed, %d in and %d out, streams may be incomplete"
                 % (packets_in, packets_out)
             )
@@ -790,20 +880,32 @@ class Orchestrator:
             notes.append("packet count unavailable, stream fidelity not checked")
         ratio = tags.byte_sum_ratio(work)
         if ratio <= tags.STATS_RATIO_FLOOR:
-            raise HoldError("track statistics missing after encode, byte-sum ratio %.4f" % ratio)
+            problems.append("track statistics missing after encode, byte-sum ratio %.4f" % ratio)
         notes.append("statistics ratio %.4f" % ratio)
-        ok, problems = tags.readiness(
-            work, kind, identity["title"], show=identity.get("show")
+        baseline = ((self.store.get(title_id) or {}).get("probe") or {}).get("video")
+        ok, readiness_problems = tags.readiness(
+            work, kind, identity["title"], show=identity.get("show"), hdr_baseline=baseline,
+            unidentified=bool(identity.get("unidentified")),
         )
         if not ok:
-            raise HoldError("published file failed readiness: %s" % "; ".join(problems))
-        notes.append("tag structure verified")
+            problems += ["published file failed readiness: %s" % p for p in readiness_problems]
+        else:
+            notes.append("tag structure verified")
+            if (baseline or {}).get("hdr"):
+                notes.append("hdr declaration intact")
         self.store.update(title_id, output_probe=compare.measure(work))
+        if problems:
+            if self._forced(title_id, state.VERIFIED, problems):
+                return
+            raise HoldError([_reason(state.VERIFIED, p) for p in problems])
         log.info("title %s verified: %s", title_id, "; ".join(notes))
         self.store.advance(title_id, state.VERIFIED, "; ".join(notes))
 
     def _publish(self, title_id, work, identity, kind):
-        if kind == "movie":
+        if identity.get("unidentified"):
+            outdir = self.layout.completed
+            filename = titles.assert_component("%s.mkv" % identity["title"])
+        elif kind == "movie":
             folder = titles.movie_folder(
                 identity["title"], identity["year"], identity["tmdb"], identity["imdb"]
             )
@@ -822,22 +924,28 @@ class Orchestrator:
             )
 
         destination = os.path.join(outdir, filename)
+        forced = bool((self.store.get(title_id) or {}).get("overridden"))
 
         if self.cfg.dry_run:
-            if os.path.exists(destination):
-                raise HoldError("destination already exists: %s" % destination)
+            if os.path.exists(destination) and not forced:
+                raise HoldError("destination already exists: %s" % destination, stage=state.PUBLISHED)
             log.info("title %s DRY RUN would publish -> %s", title_id, destination)
             self.store.advance(title_id, state.PUBLISHED, "dry run", output_path=destination)
             return
 
+        detail = "published to completed"
         try:
             self.layout.publish_file(work, destination)
         except FileExistsError as exc:
-            raise HoldError(str(exc))
-        self.store.advance(
-            title_id, state.PUBLISHED, "published to completed", output_path=destination
-        )
+            if not forced:
+                raise HoldError(str(exc), stage=state.PUBLISHED)
+            destination = self.layout.unique_path(outdir, filename)
+            self.layout.move_file(work, destination)
+            detail = "destination existed, forced through beside it as %s" % os.path.basename(destination)
+            log.warning("title %s %s", title_id, detail)
+        self.store.advance(title_id, state.PUBLISHED, detail, output_path=destination)
 
+    #----- Housekeeping after publication
     def _retire(self, title_id, source, job_id):
         if self.cfg.dry_run:
             self.store.advance(title_id, state.CLEANUP, "dry run")
@@ -870,6 +978,30 @@ class Orchestrator:
         log.info("title %s quarantined %s: %s", title_id, os.path.basename(source), reason)
         return "quarantined"
 
+    def import_finding(self, finding_id):
+        finding = self.store.finding(finding_id)
+        if finding is None:
+            raise ValueError("no such finding")
+        if finding.get("imported_title_id"):
+            row = self.store.get(finding["imported_title_id"])
+            if row and row["stage"] not in state.TERMINAL + state.STOPPED:
+                raise ValueError(
+                    "already in the pipeline as title %d at %s"
+                    % (row["id"], row["stage"])
+                )
+        if self.cfg.dry_run:
+            log.info("DRY RUN would copy %s into import for repair", finding["path"])
+            return {"ok": True, "action": "dry run", "path": finding["path"]}
+        try:
+            destination = self.layout.copy_to_import(finding["path"])
+        except FileExistsError as exc:
+            raise ValueError(str(exc))
+        except OSError as exc:
+            raise ValueError(str(exc))
+        self.store.finding_mark_import(finding_id, destination)
+        log.info("finding %d queued for repair, copied to %s", finding_id, destination)
+        return {"ok": True, "action": "copied to import", "path": destination}
+
     #----- Reporting
     def status(self):
         return {
@@ -886,5 +1018,6 @@ class Orchestrator:
                 "free_bytes": self.layout.encode_free_bytes(),
             },
             "libraries_mounted": bool(self.layout.libraries),
+            "audit": self.auditor.status(),
             "config": self.cfg.as_dict(),
         }

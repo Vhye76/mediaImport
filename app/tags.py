@@ -27,6 +27,7 @@ MOVIE = "MOVIE"
 
 KEEP_LANGS = ("eng", "en", "und")
 STATS_RATIO_FLOOR = 0.5
+COLOUR_TAGS = ("color_primaries", "color_transfer", "color_space")
 
 
 class TagError(RuntimeError):
@@ -142,6 +143,12 @@ def build_movie_xml(title, year, tmdb, imdb, carry=None):
     pairs = [("TITLE", title), ("TMDB", tmdb), ("IMDB", imdb), ("DATE_RELEASED", year)]
     pairs += sorted((carry or {}).items())
     return '<?xml version="1.0"?>\n<Tags>\n%s\n</Tags>\n' % _tag_xml(MOVIE, 50, pairs)
+
+
+def build_unidentified_xml(kind, title, carry=None):
+    target = MOVIE if kind == "movie" else EPISODE
+    pairs = [("TITLE", title)] + sorted((carry or {}).items())
+    return '<?xml version="1.0"?>\n<Tags>\n%s\n</Tags>\n' % _tag_xml(target, 50, pairs)
 
 
 def build_tv_xml(show, tvdb, tmdb, season, episode_title, episode_number, carry=None):
@@ -261,7 +268,7 @@ def movie_identity(path):
 
 
 #----- The readiness gate
-def check_movie(path, expected_title):
+def check_movie(path, expected_title, required=CANONICAL_MOVIE):
     problems = []
     root = read_tags(path)
     if root is None:
@@ -279,7 +286,7 @@ def check_movie(path, expected_title):
     if movie is None:
         problems.append("no MOVIE-targeted tag")
     else:
-        for key in CANONICAL_MOVIE:
+        for key in required:
             if not movie.get(key):
                 problems.append("MOVIE tag missing %s" % key)
         if movie.get("TITLE") and movie["TITLE"] != expected_title:
@@ -289,7 +296,7 @@ def check_movie(path, expected_title):
     return problems
 
 
-def check_tv(path, expected_show, expected_episode_title):
+def check_tv(path, expected_show, expected_episode_title, levels=(COLLECTION, SEASON, EPISODE)):
     problems = []
     root = read_tags(path)
     if root is None:
@@ -299,7 +306,7 @@ def check_tv(path, expected_show, expected_episode_title):
         problems.append("flattened tag block, Simple Name contains a slash: %s" % name)
 
     present = target_types_present(root)
-    for level in (COLLECTION, SEASON, EPISODE):
+    for level in levels:
         if level not in present:
             problems.append("missing a %s-targeted tag" % level)
 
@@ -349,6 +356,46 @@ def check_tracks(path):
     return problems
 
 
+def _declared(video, name):
+    if name == "dolby_vision":
+        return bool(video.get("dolby_vision"))
+    return video.get(name) is not None
+
+
+def _carried(video, name):
+    in_bitstream = video.get(probemod.BITSTREAM_KEY[name])
+    if name == "dolby_vision":
+        return bool(video.get("dolby_vision") or in_bitstream)
+    return video.get(name) is not None or in_bitstream is not None
+
+
+def check_hdr(path, baseline=None):
+    problems = []
+    video = probemod.probe(path).video
+    if not video.get("hdr") and not (baseline or {}).get("hdr"):
+        return problems
+
+    gap = video.get("hdr_declaration_gap") or []
+    if gap:
+        problems.append(
+            "hdr declaration short of the bitstream: container lacks %s" % ", ".join(gap)
+        )
+
+    if not baseline:
+        return problems
+
+    for tag in COLOUR_TAGS:
+        before = (baseline.get(tag) or "").lower()
+        after = (video.get(tag) or "").lower()
+        if before and before != after:
+            problems.append("%s was %s at probe and is now %s" % (tag, before, after or "unset"))
+
+    for name in probemod.HDR_DECLARATIONS:
+        if _carried(baseline, name) and not _declared(video, name):
+            problems.append("%s carried by the source is not declared by the output" % name)
+    return problems
+
+
 def check_segment_title(path, expected):
     _, data = probemod.track_selectors(path)
     actual = ((data.get("container") or {}).get("properties") or {}).get("title")
@@ -357,18 +404,24 @@ def check_segment_title(path, expected):
     return []
 
 
-def readiness(path, kind, expected_title, show=None):
+def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidentified=False):
     problems = []
     if not os.path.isfile(path):
         return False, ["output file is missing"]
 
     try:
         if kind == "movie":
-            problems += check_movie(path, expected_title)
+            problems += check_movie(
+                path, expected_title, required=("TITLE",) if unidentified else CANONICAL_MOVIE
+            )
         else:
-            problems += check_tv(path, show, expected_title)
+            problems += check_tv(
+                path, show, expected_title,
+                levels=(EPISODE,) if unidentified else (COLLECTION, SEASON, EPISODE),
+            )
         problems += check_segment_title(path, expected_title)
         problems += check_tracks(path)
+        problems += check_hdr(path, baseline=hdr_baseline)
     except (TagError, probemod.ProbeError) as exc:
         return False, problems + [str(exc)]
 

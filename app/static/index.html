@@ -191,6 +191,7 @@
   <div id="corner">
     <div class="counter" id="c-quar" onclick="showList('QUARANTINED')">Quarantined Files: <b>0</b></div>
     <div class="counter" id="c-fail" onclick="showList('FAILED')">Failed Jobs: <b>0</b></div>
+    <div class="counter" id="c-audit" onclick="showAudit()" style="display:none">Library findings: <b>0</b></div>
   </div>
 </main>
 
@@ -352,7 +353,8 @@ async function refresh() {
   }, "Nothing encoding.");
 
   paint("t-held", "n-held", titles.filter(t => t.stage === "HELD"),
-        (t) => `<div class="s warn">${esc(t.reason || "needs a decision")}</div>`,
+        (t) => `<div class="s warn">${esc((t.reasons && t.reasons.length > 1)
+          ? t.reasons.length + " reasons - " + t.reasons[0].text : (t.reason || "needs a decision"))}</div>`,
         "Nothing is waiting on you.");
 
   paint("t-ready", "n-ready", inStage(READY_STAGES),
@@ -363,6 +365,10 @@ async function refresh() {
   const f = titles.filter(t => t.stage === "FAILED").length;
   $("c-quar").innerHTML = `Quarantined Files: <b>${q}</b>`;
   $("c-fail").innerHTML = `Failed Jobs: <b>${f}</b>`;
+  const a = s.audit || {};
+  $("c-audit").style.display = a.enabled ? "" : "none";
+  $("c-audit").innerHTML = `Library findings: <b>${a.findings || 0}</b>`
+    + (a.running ? ` <span style="color:var(--dim)">scanning ${a.done}/${a.total}</span>` : "");
 }
 
 //----- Detail dialog
@@ -385,7 +391,11 @@ async function showDetail(id) {
       ${ids ? `<div class="row">${esc(ids)}</div>` : ""}
       <div class="row">${esc(t.display_stage || t.stage)}${
         t.encoder ? "   " + esc(t.encoder) : ""}   ${esc(files)}</div>
-      ${t.reason ? `<div class="row warn">${esc(t.reason)}</div>` : ""}
+      ${(t.reasons && t.reasons.length > 1)
+        ? `<div class="row warn">Held for ${t.reasons.length} reasons:</div>` +
+          t.reasons.map(r => `<div class="row warn">&bull; ${r.stage ? esc(r.stage.toLowerCase()) + ": " : ""}${esc(r.text)}</div>`).join("")
+        : (t.reason ? `<div class="row warn">${esc(t.reason)}</div>` : "")}
+      ${t.stage === "FAILED" ? `<div class="row">Force cannot apply: no output was produced, so there is nothing to carry forward.  Retry runs it again.</div>` : ""}
       <div class="row">${esc(t.source_path)}</div>
       ${t.output_path ? `<div class="row">${esc(t.output_path)}</div>` : ""}
     </div>`;
@@ -401,7 +411,7 @@ async function showDetail(id) {
   if (t.comparison) acts.push(`<button onclick="showCompare(${t.id})">Compare</button>`);
   if (t.stage === "HELD" || t.stage === "FAILED") {
     acts.push(`<button onclick="act(${t.id},'retry')">Retry</button>`);
-    acts.push(`<button onclick="act(${t.id},'override')">Force through</button>`);
+    if (t.forceable) acts.push(`<button onclick="act(${t.id},'override')">Force through</button>`);
     acts.push(`<button class="bad" onclick="act(${t.id},'discard')">Discard</button>`);
   }
   if (t.files_gone) acts.push(`<button class="bad" onclick="act(${t.id},'forget')">Forget</button>`);
@@ -458,7 +468,7 @@ function showList(kind, show) {
           ${t.comparison ? `<button onclick="$('lst').close();showCompare(${t.id})">Compare</button>` : ""}
           ${actionable(t) ? `
           <button onclick="actRow(${t.id},'retry')">Retry</button>
-          <button onclick="actRow(${t.id},'override')">Force through</button>
+          ${t.forceable ? `<button onclick="actRow(${t.id},'override')">Force through</button>` : ""}
           <button class="bad" onclick="actRow(${t.id},'discard')">Discard</button>` : ""}
         </div>
       </div>`).join("");
@@ -524,6 +534,92 @@ async function showCompare(id) {
   pill($("cmp-verdict"), `${v}${gates}${c.reason ? " - " + c.reason : ""}`,
        v === "win" ? "ok" : (v === "loss" ? "bad" : "warn"));
   $("cmp").showModal();
+}
+
+function when(ts) {
+  if (!ts) return "never";
+  return new Date(ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+
+let FINDINGS = {};
+
+async function showAudit() {
+  let a;
+  try { a = await (await fetch("/api/audit")).json(); } catch (e) { return; }
+  const st = a.status || {};
+  const rows = a.findings || [];
+  FINDINGS = {};
+  rows.forEach(f => { FINDINGS[f.id] = f; });
+  LIST_KIND = "AUDIT"; LIST_IDS = [];
+
+  $("lst-h").textContent = "Library findings - " + rows.length;
+  const bits = [];
+  if (st.running) bits.push(`scanning ${st.done}/${st.total}` + (st.current ? " - " + esc(st.current) : ""));
+  else bits.push(`last pass finished ${when(st.finished_at)}`);
+  bits.push(`${st.audited || 0} files audited`);
+  if (!st.running && st.next_at) bits.push(`next pass ${when(st.next_at)}`);
+  $("lst-acts").innerHTML = `<span class="lbl">${bits.join(" &middot; ")}</span>
+     <button onclick="sweepNow()">Sweep now</button>`;
+  $("lst-acts").style.display = "";
+
+  $("lst-body").innerHTML = rows.length === 0
+    ? '<div class="empty" style="padding:16px">Every audited file meets the standard.</div>'
+    : rows.map(f => `<div class="row">
+        <div>
+          <div class="nm">${esc(f.name)}</div>
+          <div style="font-size:12px;color:var(--dim)">${esc(f.path)}</div>
+          <div class="why">${esc(f.summary || "")}</div>
+          <div style="font-size:12px;color:var(--dim)">${gb(f.measured.size_bytes || 0)}</div>
+        </div>
+        <div class="btns">
+          <button onclick="$('lst').close();showFinding(${f.id})">Details</button>
+          ${f.in_pipeline
+            ? `<button onclick="$('lst').close();showDetail(${f.in_pipeline.id})">in pipeline: #${f.in_pipeline.id} ${esc(f.in_pipeline.display_stage)}</button>`
+            : `<button onclick="importFinding(${f.id})">Import to import/</button>`}
+        </div>
+      </div>`).join("");
+  $("lst").showModal();
+}
+
+async function showFinding(id) {
+  const f = FINDINGS[id];
+  if (!f) return;
+  const rows = (f.measured && f.measured.rows) || [];
+  $("cmp-title").textContent = "Library finding - " + f.name;
+  $("cmp-notes").innerHTML = "";
+  $("cmp-paths").innerHTML = `<div><strong>library</strong> ${esc(f.path)}</div>`;
+  const section = (title, subset, a, b) => subset.length === 0 ? "" :
+    `<tr><th>${title}</th><th>${a}</th><th>${b}</th><th>Repair</th></tr>` +
+    subset.map(r => `<tr class="${r.ok ? "" : "differs"}">
+      <td>${esc(r.check)}${r.ok ? "" : '<span class="tag ungated">differs</span>'}</td>
+      ${cell(r.expected)}${cell(r.actual)}
+      <td class="gate">${r.ok ? "" : esc(r.repair || "not correctable")}</td>
+    </tr>`).join("");
+  const hdr = rows.filter(r => r.surface);
+  const rest = rows.filter(r => !r.surface);
+  $("cmp-body").innerHTML = `<table>` +
+    section("Check", hdr, "Bitstream", "Container") +
+    section("Check", rest, "Expected", "Actual") + `</table>`;
+  const failed = rows.filter(r => !r.ok).length;
+  pill($("cmp-verdict"), failed ? `${failed} finding(s), correctable without re-encode` : "meets the standard",
+       failed ? "warn" : "ok");
+  $("cmp").showModal();
+}
+
+async function importFinding(id) {
+  let r;
+  try {
+    r = await (await fetch(`/api/audit/${id}/import`, {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: "{}"})).json();
+  } catch (e) { return; }
+  if (r.error) alert(r.error);
+  showAudit();
+}
+
+async function sweepNow() {
+  try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
+  catch (e) {}
+  showAudit();
 }
 
 //----- Operator actions

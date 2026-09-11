@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS titles (
     work_path     TEXT,
     output_path   TEXT,
     quarantine_path TEXT,
+    origin_path   TEXT,
     poster_url    TEXT,
     encoder       TEXT,
     grain_ratio   REAL,
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS titles (
     compare_json  TEXT,
     output_probe_json TEXT,
     reason        TEXT,
+    reasons_json  TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
     retry_after   REAL,
     overridden    INTEGER NOT NULL DEFAULT 0,
@@ -107,6 +109,21 @@ CREATE TABLE IF NOT EXISTS history (
     FOREIGN KEY (title_id) REFERENCES titles(id)
 );
 CREATE INDEX IF NOT EXISTS history_title ON history(title_id);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    path          TEXT NOT NULL UNIQUE,
+    kind          TEXT,
+    size          INTEGER,
+    mtime         REAL,
+    checks_json   TEXT,
+    measured_json TEXT,
+    summary       TEXT,
+    import_path   TEXT,
+    imported_title_id INTEGER,
+    audited_at    REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS findings_import ON findings(import_path);
 """
 
 
@@ -124,6 +141,20 @@ def _unjson(value):
         return json.loads(value)
     except ValueError:
         return None
+
+
+def normalise_reasons(reasons):
+    if reasons is None:
+        return []
+    if isinstance(reasons, (str, bytes)):
+        reasons = [reasons]
+    out = []
+    for item in reasons:
+        if isinstance(item, dict):
+            out.append({"stage": item.get("stage"), "text": str(item.get("text") or "")})
+        else:
+            out.append({"stage": None, "text": str(item)})
+    return [e for e in out if e["text"]]
 
 
 #----- The store
@@ -154,6 +185,7 @@ class Store:
         d["decision"] = _unjson(d.pop("decision_json", None))
         d["comparison"] = _unjson(d.pop("compare_json", None))
         d["output_probe"] = _unjson(d.pop("output_probe_json", None))
+        d["reasons"] = _unjson(d.pop("reasons_json", None)) or []
         d["overridden"] = bool(d.get("overridden"))
         return d
 
@@ -227,11 +259,12 @@ class Store:
         log.debug("title %s fields updated: %s", title_id, ", ".join(sorted(fields)))
         if not fields:
             return
-        for key in ("probe", "decision", "comparison", "output_probe"):
+        for key in ("probe", "decision", "comparison", "output_probe", "reasons"):
             if key in fields:
                 column = {"probe": "probe_json", "decision": "decision_json",
                           "comparison": "compare_json",
-                          "output_probe": "output_probe_json"}[key]
+                          "output_probe": "output_probe_json",
+                          "reasons": "reasons_json"}[key]
                 fields[column] = _json(fields.pop(key))
         fields["updated_at"] = time.time()
         assignments = ", ".join("%s = ?" % k for k in fields)
@@ -246,8 +279,10 @@ class Store:
         self.update(title_id, **fields)
         self.record(title_id, stage, detail)
 
-    def hold(self, title_id, reason):
-        self.advance(title_id, HELD, reason, reason=reason)
+    def hold(self, title_id, reasons):
+        entries = normalise_reasons(reasons)
+        summary = "; ".join(e["text"] for e in entries)
+        self.advance(title_id, HELD, summary, reason=summary, reasons=entries)
 
     def hold_for_retry(self, title_id, reason, delay):
         row = self.get(title_id) or {}
@@ -257,6 +292,7 @@ class Store:
             HELD,
             "%s (attempt %d, retrying in %ds)" % (reason, attempts, int(delay)),
             reason=reason,
+            reasons=normalise_reasons(reason),
             attempts=attempts,
             retry_after=time.time() + delay,
         )
@@ -305,10 +341,12 @@ class Store:
             comparison=None,
             output_probe=None,
             reason=None,
+            reasons=None,
             attempts=0,
             retry_after=None,
             overridden=0,
             quarantine_path=None,
+            origin_path=None,
             poster_url=None,
         )
 
@@ -331,3 +369,96 @@ class Store:
     def resumable(self):
         rows = self.active()
         return [r for r in rows if r["stage"] not in STOPPED]
+
+    def _finding_to_dict(self, row):
+        if row is None:
+            return None
+        d = dict(row)
+        d["checks"] = _unjson(d.pop("checks_json", None)) or []
+        d["measured"] = _unjson(d.pop("measured_json", None)) or {}
+        return d
+
+    def audit_seen(self, path):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT size, mtime FROM findings WHERE path = ?", (str(path),)
+            )
+            row = cur.fetchone()
+            return (row["size"], row["mtime"]) if row else None
+
+    def audit_record(self, path, kind, size, mtime, checks, measured, summary):
+        now = time.time()
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO findings (path, kind, size, mtime, checks_json, measured_json,"
+                " summary, audited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, size=excluded.size,"
+                " mtime=excluded.mtime, checks_json=excluded.checks_json,"
+                " measured_json=excluded.measured_json, summary=excluded.summary,"
+                " audited_at=excluded.audited_at",
+                (str(path), kind, size, mtime, _json(checks), _json(measured), summary, now),
+            )
+            self._db.commit()
+
+    def audit_forget_missing(self, present):
+        present = set(str(p) for p in present)
+        with self._lock:
+            cur = self._db.execute("SELECT id, path FROM findings")
+            gone = [r["id"] for r in cur.fetchall() if r["path"] not in present]
+            for finding_id in gone:
+                self._db.execute("DELETE FROM findings WHERE id = ?", (finding_id,))
+            self._db.commit()
+        return len(gone)
+
+    def finding(self, finding_id):
+        with self._lock:
+            cur = self._db.execute("SELECT * FROM findings WHERE id = ?", (finding_id,))
+            return self._finding_to_dict(cur.fetchone())
+
+    def finding_by_import_path(self, import_path):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT * FROM findings WHERE import_path = ?", (str(import_path),)
+            )
+            return self._finding_to_dict(cur.fetchone())
+
+    def findings(self):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT * FROM findings WHERE checks_json IS NOT NULL AND checks_json != '[]'"
+                " ORDER BY path"
+            )
+            return [self._finding_to_dict(r) for r in cur.fetchall()]
+
+    def audit_totals(self):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT COUNT(*) n, SUM(CASE WHEN checks_json IS NOT NULL AND checks_json != '[]'"
+                " THEN 1 ELSE 0 END) f, MAX(audited_at) latest FROM findings"
+            )
+            row = cur.fetchone()
+            return {"audited": row["n"] or 0, "findings": row["f"] or 0, "latest": row["latest"]}
+
+    def finding_mark_import(self, finding_id, import_path):
+        with self._lock:
+            self._db.execute(
+                "UPDATE findings SET import_path = ?, imported_title_id = NULL WHERE id = ?",
+                (str(import_path), finding_id),
+            )
+            self._db.commit()
+
+    def link_import(self, title_id, source_path):
+        finding = self.finding_by_import_path(source_path)
+        if finding is None:
+            return None
+        with self._lock:
+            self._db.execute(
+                "UPDATE findings SET imported_title_id = ? WHERE id = ?", (title_id, finding["id"])
+            )
+            self._db.commit()
+        self.update(title_id, origin_path=finding["path"])
+        log.info(
+            "title %s was imported from the library for repair, origin %s",
+            title_id, finding["path"],
+        )
+        return finding["path"]

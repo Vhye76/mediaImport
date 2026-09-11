@@ -89,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
                 return self._send(200, self.app.log_tail(), "text/plain; charset=utf-8")
+            if path == "/api/audit":
+                return self._json(200, self.app.audit())
             if path.startswith("/api/poster/"):
                 found = self.app.poster(int(path.rsplit("/", 1)[1]))
                 if found is None:
@@ -118,6 +120,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "body must be JSON"})
 
         m = path.split("/")
+        if path == "/api/audit":
+            return self._json(200, self.app.sweep())
+        if len(m) == 5 and m[1] == "api" and m[2] == "audit" and m[4] == "import":
+            try:
+                finding_id = int(m[3])
+            except ValueError:
+                return self._json(400, {"error": "bad finding id"})
+            try:
+                result = self.app.orchestrator.import_finding(finding_id)
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            return self._json(200, result)
         if len(m) == 5 and m[1] == "api" and m[2] == "held" and m[4] == "decision":
             try:
                 title_id = int(m[3])
@@ -152,6 +166,30 @@ class WebUI:
     def status(self):
         return self.orchestrator.status()
 
+    def audit(self):
+        return {
+            "status": self.orchestrator.auditor.status(),
+            "findings": [self.annotate_finding(f) for f in self.store.findings()],
+        }
+
+    def sweep(self):
+        self.orchestrator.auditor.sweep_now()
+        return {"ok": True, "action": "sweep requested"}
+
+    def annotate_finding(self, finding):
+        title_id = finding.get("imported_title_id")
+        finding["in_pipeline"] = None
+        if title_id:
+            row = self.store.get(title_id)
+            if row and row["stage"] not in state.TERMINAL + state.STOPPED:
+                finding["in_pipeline"] = {
+                    "id": row["id"],
+                    "stage": row["stage"],
+                    "display_stage": state.display_name(row["stage"]),
+                }
+        finding["name"] = os.path.splitext(os.path.basename(finding["path"]))[0]
+        return finding
+
     def log_tail(self, lines=400):
         if not self.log_path or not os.path.isfile(self.log_path):
             return "no log file configured"
@@ -164,6 +202,7 @@ class WebUI:
             return row
         row["display_stage"] = state.display_name(row.get("stage"))
         row["complete"] = state.is_complete(row.get("stage"))
+        row["forceable"] = row.get("stage") == state.HELD
         output = row.get("output_path")
         source = row.get("source_path")
         quarantined = row.get("quarantine_path")
@@ -230,6 +269,11 @@ class WebUI:
             self.orchestrator.queue.put(title_id)
             return {"ok": True, "action": "requeued"}
         if action == "override":
+            if row["stage"] != state.HELD:
+                raise ValueError(
+                    "force cannot apply to a failed title: no output was produced, "
+                    "so there is nothing to carry forward; retry instead"
+                )
             self.store.update(title_id, overridden=1)
             self.store.advance(title_id, state.DETECTED, "operator overrode the gates")
             self.orchestrator.queue.put(title_id)

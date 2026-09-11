@@ -27,6 +27,23 @@ CROP_SAMPLE_POSITIONS = (0.25, 0.45, 0.65)
 CROP_SAMPLE_FRAMES = 40
 CROP_MIN_BARS_PX = 20
 
+MASTERING_PROPERTIES = (
+    ("red_x", "chromaticity-coordinates-red-x"),
+    ("red_y", "chromaticity-coordinates-red-y"),
+    ("green_x", "chromaticity-coordinates-green-x"),
+    ("green_y", "chromaticity-coordinates-green-y"),
+    ("blue_x", "chromaticity-coordinates-blue-x"),
+    ("blue_y", "chromaticity-coordinates-blue-y"),
+    ("white_point_x", "white-coordinates-x"),
+    ("white_point_y", "white-coordinates-y"),
+    ("min_luminance", "min-luminance"),
+    ("max_luminance", "max-luminance"),
+)
+CONTENT_LIGHT_PROPERTIES = (
+    ("max_content", "max-content-light"),
+    ("max_average", "max-frame-light"),
+)
+
 _CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
 
 
@@ -136,11 +153,16 @@ def _mp4_to_mkv(src, dst):
         raise MediaError(
             "chapter count changed in remux: %d in, %d out" % (chapters_in, chapters_out)
         )
-    _verify_duration(src, tmp, REMUX_DURATION_TOLERANCE_S)
+    result = {"method": "mp4_to_mkv", "chapters": chapters_out}
+    try:
+        _verify_duration(src, tmp, REMUX_DURATION_TOLERANCE_S)
+    except MediaError as exc:
+        result["duration_note"] = str(exc)
+        log.info("mp4 remux duration note: %s", exc)
     os.replace(tmp, dst)
     log.info("remuxed mp4 to mkv, %d chapter(s) preserved", chapters_out)
     log.debug("chapters in %d, out %d", chapters_in, chapters_out)
-    return {"method": "mp4_to_mkv", "chapters": chapters_out}
+    return result
 
 
 def _avi_to_mkv(src, dst):
@@ -267,6 +289,67 @@ def fix_flags_and_language(path):
     )
     log.debug("mkvpropedit args: %s", " ".join(args))
     return {"edits": len(args) // 4}
+
+
+def _video_selector(rows):
+    for row in rows:
+        if row["type"] == "video" and "V_MJPEG" not in (row["codec_id"] or "").upper():
+            return row["selector"]
+    return None
+
+
+def repair_hdr_declaration(path, video):
+    gap = list(video.get("hdr_declaration_gap") or [])
+    result = {"edits": 0, "repaired": [], "unrepairable": [], "written": {}}
+    if not gap:
+        log.info("hdr declaration matches the bitstream, no edit needed")
+        return result
+
+    args = []
+    written = {}
+    if "mastering_display" in gap and video.get("mastering_bitstream"):
+        source = video["mastering_bitstream"]
+        for key, prop in MASTERING_PROPERTIES:
+            value = "%.10g" % float(source.get(key) or 0.0)
+            args += ["--set", "%s=%s" % (prop, value)]
+            written[prop] = value
+        result["repaired"].append("mastering_display")
+    if "content_light" in gap and video.get("content_light_bitstream"):
+        source = video["content_light_bitstream"]
+        for key, prop in CONTENT_LIGHT_PROPERTIES:
+            value = str(int(source.get(key) or 0))
+            args += ["--set", "%s=%s" % (prop, value)]
+            written[prop] = value
+        result["repaired"].append("content_light")
+    if "dolby_vision" in gap:
+        result["unrepairable"].append("dolby_vision")
+        log.warning(
+            "container carries no Dolby Vision configuration record for an RPU in the "
+            "bitstream, and a header edit cannot add one"
+        )
+
+    if not args:
+        return result
+
+    rows, _ = probemod.track_selectors(path)
+    selector = _video_selector(rows)
+    if selector is None:
+        raise MediaError("no video track to repair the hdr declaration on")
+
+    proc = run([MKVPROPEDIT, str(path), "--edit", "track:%s" % selector] + args)
+    if proc.returncode != 0:
+        raise MediaError(
+            "mkvpropedit hdr declaration repair failed rc=%d: %s"
+            % (proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()[-400:])
+        )
+    result["edits"] = len(args) // 2
+    result["written"] = written
+    log.info(
+        "hdr declaration repaired from the bitstream: %s, %d propert%s written",
+        ", ".join(result["repaired"]), result["edits"], "y" if result["edits"] == 1 else "ies",
+    )
+    log.debug("mkvpropedit args: %s", " ".join(args))
+    return result
 
 
 #----- Crop detection

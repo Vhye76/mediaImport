@@ -259,7 +259,7 @@ Each case:  place one title matching the gate, wait for ENCODED, then read the g
 T-31  gate 1   an hevc source           expect passthrough, output still hevc, not re-encoded
 T-32  gate 1   an av1 source            expect passthrough, output still av1
 T-33  gate 2   an SD episode            expect passthrough, output codec unchanged
-T-34  gate 3   a Dolby Vision title     expect libx265, output carries the DOVI record
+T-34  gate 1   a Dolby Vision title     expect passthrough at gate 1, not gate 3, output carries the DOVI record
 T-35  gate 4   OUTPUT_CODEC=av1, grainy expect libsvtav1, output av1
 T-36  gate 5   OUTPUT_CODEC=av1, clean  expect av1_qsv, output av1
 T-37  gate 6   a grainy source          expect libx265, output hevc
@@ -313,6 +313,10 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-60a  The published file carries a targeted tag block.**  Assert structurally on the file in 'complete/', not by grep:  every expected TargetType appears on its own Tag element, and no Simple Name anywhere contains a slash.  Run one movie and one episode.
 - **T-60b  Scraped metadata survives the encode.**  A source carrying an untargeted block of ACTOR, DIRECTOR, GENRE and SYNOPSIS.  Expect every one of those keys present on the published file.
 - **T-60c  Statistics survive the post-encode tag write.**  Record the byte-sum ratio on the published file.  Expect it above the floor and not zero.
+- **T-60e  HDR declarations survive and are repaired.**  Three HDR sources through the passthrough path, built from one clip:  one whose container agrees with its bitstream, one whose container declares no mastering display or content light level, and one whose container declares different figures from its SEI.  Expect all three PUBLISHED with 'ffprobe -show_streams' on the output reporting mastering display and content light level matching the bitstream, the second and third with a REMUXED stage detail naming the repair, the first with none.  A fourth source carrying no mastering metadata on either surface must publish with nothing manufactured.
+- **T-60f  A lost HDR declaration holds.**  Take an HDR title past REMUXED, strip the Colour element from the work file with mkvpropedit by hand, and let it continue.  Expect HELD at READY or VERIFIED naming the declaration the source carried and the output lacks.
+- **T-60g  An HDR encode declares fully.**  An HDR source in a codec that is neither hevc nor av1, so it actually reaches libx265.  Expect the output to carry mastering display and content light level in both container and bitstream, matching the source's bitstream.
+- **T-60h  Dolby Vision through a forced encode keeps its RPU.**  A DV title forced down the x265 path.  Expect '-dolbyvision 1' and the VBV pair in the debug argv, and the output carrying the DOVI configuration record with per-frame RPU data.  Then confirm the build gate:  an image whose libx265 wrapper lacks '-dolbyvision' must fail to build.
 - **T-60d  Video packets are preserved through the encode.**  Expect the VERIFIED stage detail on '/api/titles/<id>' to carry a video packet figure equal to the source count.  Measured 2026-09-08:  an 89 minute encode preserved 128,424 packets exactly, so this is an equality and not a tolerance.  Then truncate an encoder output by hand before verification and expect the title HELD naming the packet mismatch rather than published.
 
 ## 11.  Publishing
@@ -360,6 +364,26 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-70f  A re-imported source is processed, not skipped.**  After T-70e, drop the same source back into 'import/' under the same filename.  Expect it detected and processed rather than silently ignored.
 - **T-70g  A source still in flight is not processed twice.**  While a title is at ENCODING, confirm '/api/titles' holds no second row for its path and that the original row keeps its stage.  The skip itself is a debug line and is not asserted on.
 - **T-70h  The log records the encode and not the polls.**  Run one title to CLEANUP at the default 'info' level with a second title in flight.  Expect one ENCODED line and one VERIFIED line, each naming the title id, and no 'already claims this path' line at info.  This is the one case that reads the log, and it exists because the defect it guards was the log itself.
+
+## 12b.  Reasons and force
+
+- **T-94  Every assessment reason is collected.**  A file that fails the resolution floor and has an unresolvable name.  Expect one HELD with two reasons on '/api/titles/<id>', one from SCREENED and one from IDENTIFIED, and the detail dialog listing both.  One Force through, then expect it published.
+- **T-95  A forced unidentified title keeps its name.**  Continuing T-94:  expect the output flat in 'complete/' as '<source stem>.mkv', a single MOVIE or EPISODE tag carrying TITLE only, the segment title matching, and no provider-named folder.
+- **T-96  Verification collects, it does not stop at the first failure.**  Arrange an output failing three of the four VERIFIED checks.  Expect all three named on the title, not one.
+- **T-97  Force records every gate it bypassed.**  Force a title past readiness or verification.  Expect the stage history to carry a 'forced past' entry for each, and the dashboard to show it.
+- **T-98  Force publishes beside a collision, never over it.**  Force a title whose destination already exists.  Expect both files present and the new one under a unique name, with the PUBLISHED detail saying so.
+- **T-99  Force cannot apply to FAILED.**  A file whose ffprobe fails outright.  Expect FAILED, 'forceable' false on '/api/titles/<id>', the detail dialog stating why, and POST 'override' refused with a 4xx.
+- **T-100  A transient provider failure is not swept into a hold.**  Block outbound access and import a title.  Expect the backoff retries, not a batched HELD carrying the provider error as a reason.
+
+## 12c.  The library audit
+
+- **T-101  The sweep reproduces the known findings.**  With the libraries mounted, wait for a first pass.  Expect 'GET /api/audit' to list exactly the HDR titles whose container under-declares the bitstream and none whose container agrees, and every other check clean on files that meet the standard.
+- **T-102  A repeat pass is cheap.**  Time the second pass.  Expect it to finish in seconds, with the log naming every file as unchanged.
+- **T-103  The copy action feeds the pipeline.**  Import one finding.  Expect the file to appear in 'import/' under a '.part' name and be renamed, the watcher to detect it, the COMPARED detail to say the incumbent was its own origin and was skipped, and the published output to carry the repaired declaration.  The finding row must show the title as in the pipeline while it runs.
+- **T-104  The copy refuses a duplicate.**  Import the same finding twice.  Expect the second refused with a 4xx naming the title in flight.
+- **T-105  The copy refuses a full root.**  With the root near full, import a finding.  Expect a refusal before any bytes move and no '.part' file left behind.
+- **T-106  The audit never starts without a library.**  Unset both library variables.  Expect no auditor thread, no counter on the dashboard, and 'audit.enabled' false on '/api/status'.
+- **T-107  The dashboard renders the audit.**  Expect a third corner counter, the list dialog with the sweep status in its header, a Details table per finding with the differing rows marked, and an Import button that becomes an in-pipeline link once pressed.
 
 ## 13.  Web
 

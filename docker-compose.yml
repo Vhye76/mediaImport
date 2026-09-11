@@ -33,8 +33,8 @@ services:
 
       WEB_PORT: 443
       DRY_RUN: 0
-      POLL_INTERVAL: 60
-      MTIME_QUIET: 120
+      POLL_INTERVAL: 15
+      MTIME_QUIET: 30
       LOG_LEVEL: info
 
     #----- Host paths come from .env

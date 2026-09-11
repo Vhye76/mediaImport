@@ -5,7 +5,7 @@ class ConfigError(RuntimeError):
     pass
 
 
-#----- Config is built before logging exists, so sources are recorded here and printed by main.
+#----- Config is built before logging exists, so sources are recorded rather than logged.
 _SOURCES = {}
 
 
@@ -142,6 +142,8 @@ class Config:
         self.grain_threshold = _float("GRAIN_THRESHOLD", 0.18)
         self.lock_wait_timeout = _int("LOCK_WAIT_TIMEOUT", 0)
         self.lock_wait_interval = _int("LOCK_WAIT_INTERVAL", 15)
+        self.audit_interval = _int("AUDIT_INTERVAL", 2)
+        self.audit_sweep_interval = _int("AUDIT_SWEEP_INTERVAL", 3600)
 
         for name, value in (
             ("MAX_JOBS", self.max_jobs),
@@ -149,6 +151,8 @@ class Config:
             ("CPU_SLOTS", self.cpu_slots),
             ("POLL_INTERVAL", self.poll_interval),
             ("MTIME_QUIET", self.mtime_quiet),
+            ("AUDIT_INTERVAL", self.audit_interval),
+            ("AUDIT_SWEEP_INTERVAL", self.audit_sweep_interval),
         ):
             if value < 0:
                 raise ConfigError("%s must not be negative, got %d" % (name, value))
@@ -218,6 +222,10 @@ class Config:
     def libraries_mounted(self):
         return bool(self.library_movies or self.library_tv)
 
+    @property
+    def audit_enabled(self):
+        return self.audit_interval > 0 and self.libraries_mounted
+
     #----- Reporting
     def as_dict(self):
         return {
@@ -249,6 +257,8 @@ class Config:
             "GRAIN_THRESHOLD": self.grain_threshold,
             "LOCK_WAIT_TIMEOUT": self.lock_wait_timeout,
             "LOCK_WAIT_INTERVAL": self.lock_wait_interval,
+            "AUDIT_INTERVAL": self.audit_interval,
+            "AUDIT_SWEEP_INTERVAL": self.audit_sweep_interval,
         }
 
     def banner(self):

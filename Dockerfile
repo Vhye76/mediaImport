@@ -45,7 +45,12 @@ RUN set -eux; \
         echo "  2. jellyfin-ffmpeg from the Jellyfin apt repository" >&2; \
         exit 1; \
     fi; \
-    ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|av1_vaapi"
+    ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|av1_vaapi"; \
+    if ! ffmpeg -hide_banner -h encoder=libx265 2>/dev/null | grep -q "^  -dolbyvision"; then \
+        echo "BUILD GATE FAILED: this ffmpeg's libx265 wrapper has no -dolbyvision option," >&2; \
+        echo "so a Dolby Vision RPU cannot be carried through an encode. Needs ffmpeg 7.1 or later." >&2; \
+        exit 1; \
+    fi
 
 #----- Image metadata
 LABEL org.opencontainers.image.title="mediaimport" \
