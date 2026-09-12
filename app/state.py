@@ -254,6 +254,13 @@ class Store:
         rows = self.all(stage=HELD) + self.all(stage=FAILED)
         return sorted(rows, key=lambda r: r["updated_at"], reverse=True)
 
+    def poster_urls(self):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT DISTINCT poster_url FROM titles WHERE poster_url IS NOT NULL"
+            )
+            return [r["poster_url"] for r in cur.fetchall()]
+
     def counts_by_stage(self):
         with self._lock:
             cur = self._db.execute("SELECT stage, COUNT(*) n FROM titles GROUP BY stage")
@@ -406,6 +413,12 @@ class Store:
                 (str(path), kind, size, mtime, _json(checks), _json(measured), summary, now),
             )
             self._db.commit()
+
+    def audit_forget_all(self):
+        with self._lock:
+            cur = self._db.execute("DELETE FROM findings")
+            self._db.commit()
+            return cur.rowcount
 
     def audit_forget_missing(self, present):
         present = set(str(p) for p in present)

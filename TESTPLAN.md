@@ -447,14 +447,17 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-130  An unpadded season folder is a finding.**  'Season 6' holding a file whose SEASON PART_NUMBER is 6.  Expect 'season folder' failing with 'Season 06' expected.
 - **T-131  A range file is compared as a range.**  'Show - S05E01-E02 - Title.mkv' with EPISODE PART_NUMBER 1.  Expect 'file name' passing;  the same file renamed 'S05E02-E03' fails.
 - **T-132  A component breaking a section 9 rule is a finding.**  A season folder ending in a period.  Expect 'component rules' failing and naming that component.
+- **T-133  Rescan wipes and re-assesses everything.**  On an already-swept library press 'Rescan entire library'.  Expect the findings counter at zero at once, a new pass over every file, and the finished log line reporting every file assessed and none unchanged;  'Sweep now' afterwards finishes in seconds.
+- **T-134  Rescan during a pass restarts it from the top.**  Press it while 'Scanning' shows a pass part way through.  Expect the running pass to stop within one file interval and a fresh pass to start at the first file, with no stat-skipped files on it.
+- **T-135  Rescan does not disturb an in-flight repair.**  With a finding's copy in the pipeline, rescan.  Expect the row to offer Import once the file is re-assessed, a second Import refused on the name in 'import/', the title unaffected, and its COMPARED detail still recording the origin skip.
 
 ## 13.  Web
 
 - **T-70  HTTPS answers.**  'curl -sk https://localhost/api/status'.  Expect JSON.
 - **T-71  Plain HTTP does not.**  'curl -s http://localhost:443/api/status'.  Expect a failure, not a redirect and not a served page.
 - **T-72  The dashboard is served.**  'curl -sk https://localhost/'.  Expect HTML.
-- **T-76  A poster appears once a title is identified.**  Import a film with a resolvable tmdb id.  Expect '/api/titles/<id>' to carry a 'poster_url' after IDENTIFIED, and 'GET /api/poster/<id>' to return image bytes with an image content type.
-- **T-77  A title with no poster falls back to a text tile.**  A file held at the standards gate, which never identifies.  Expect 'poster_url' null, '/api/poster/<id>' to answer 404, and the tile to show the filename on the same footprint rather than a blank.
+- **T-76  A poster appears once a title is identified.**  Import a film with a resolvable tmdb id.  Expect '/api/titles/<id>' to carry a 'poster_url' after IDENTIFIED, a 'poster' hash beside it, and 'GET /api/poster/<hash>' to return image bytes with an image content type.
+- **T-77  A title with no poster falls back to a text tile.**  A file held at the standards gate, which never identifies.  Expect 'poster_url' and 'poster' null, '/api/poster/<any unknown hash>' to answer 404, and the tile to show the filename on the same footprint rather than a blank.
 - **T-78  Posters are served from the container, not from TMDB.**  After a poster has been fetched once, confirm a file exists under 'config/cache/posters', then block outbound internet and reload the dashboard.  Expect the poster still rendered.
 - **T-79  A poster fetch never blocks identification.**  While a dashboard with uncached posters is loading, confirm a title still advances through IDENTIFIED at the normal rate.  The poster path must not sit behind the 3 second provider throttle.
 - **T-80  Television collapses to one tile per show.**  Import a season.  Expect one tile carrying the series poster and the episode count, the box header counting titles rather than tiles, and clicking the tile to list the episodes.

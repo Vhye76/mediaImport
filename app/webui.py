@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import threading
 import urllib.error
@@ -23,6 +24,13 @@ POSTER_TYPES = {
     ".webp": "image/webp",
 }
 POSTER_CACHE_CONTROL = "public, max-age=604800, immutable"
+
+
+POSTER_KEY = re.compile(r"^[0-9a-f]{64}$")
+
+
+def poster_key(url):
+    return hashlib.sha256(url.encode()).hexdigest()
 
 
 def fetch_poster_bytes(url):
@@ -92,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/audit":
                 return self._json(200, self.app.audit())
             if path.startswith("/api/poster/"):
-                found = self.app.poster(int(path.rsplit("/", 1)[1]))
+                found = self.app.poster(path.rsplit("/", 1)[1])
                 if found is None:
                     return self._json(404, {"error": "no poster"})
                 data, content_type = found
@@ -121,7 +129,7 @@ class Handler(BaseHTTPRequestHandler):
 
         m = path.split("/")
         if path == "/api/audit":
-            return self._json(200, self.app.sweep())
+            return self._json(200, self.app.sweep(bool(body.get("rescan"))))
         if len(m) == 5 and m[1] == "api" and m[2] == "audit" and m[4] == "import":
             try:
                 finding_id = int(m[3])
@@ -173,7 +181,10 @@ class WebUI:
             "findings": [self.annotate_finding(f) for f in self.store.findings()],
         }
 
-    def sweep(self):
+    def sweep(self, rescan=False):
+        if rescan:
+            self.orchestrator.auditor.rescan()
+            return {"ok": True, "action": "findings wiped, full rescan requested"}
         self.orchestrator.auditor.sweep_now()
         return {"ok": True, "action": "sweep requested"}
 
@@ -212,6 +223,7 @@ class WebUI:
         if row.get("stage") == state.ROUTED and (row.get("decision") or {}).get("action") == "passthrough":
             row["display_stage"] = "waiting for passthrough"
         row["complete"] = state.is_complete(row.get("stage"))
+        row["poster"] = poster_key(row["poster_url"]) if row.get("poster_url") else None
         row["forceable"] = row.get("stage") == state.HELD
         output = row.get("output_path")
         source = row.get("source_path")
@@ -224,24 +236,25 @@ class WebUI:
         )
         return row
 
-    def poster(self, title_id):
-        row = self.store.get(title_id)
-        url = (row or {}).get("poster_url")
+    def poster(self, key):
+        if not POSTER_KEY.match(key or ""):
+            return None
+        directory = os.path.join(self.cfg.media_config, "cache", "posters")
+        for extension, content_type in POSTER_TYPES.items():
+            path = os.path.join(directory, key + extension)
+            if os.path.isfile(path):
+                try:
+                    with open(path, "rb") as fh:
+                        return fh.read(), content_type
+                except OSError:
+                    break
+        url = next((u for u in self.store.poster_urls() if poster_key(u) == key), None)
         if not url:
             return None
         extension = os.path.splitext(urlparse(url).path)[1].lower()
         if extension not in POSTER_TYPES:
             extension = ".jpg"
-        directory = os.path.join(self.cfg.media_config, "cache", "posters")
-        path = os.path.join(
-            directory, hashlib.sha256(url.encode()).hexdigest() + extension
-        )
-        if os.path.isfile(path):
-            try:
-                with open(path, "rb") as fh:
-                    return fh.read(), POSTER_TYPES[extension]
-            except OSError:
-                pass
+        path = os.path.join(directory, key + extension)
         data = fetch_poster_bytes(url)
         if not data:
             return None
@@ -249,9 +262,9 @@ class WebUI:
             os.makedirs(directory, exist_ok=True)
             with open(path, "wb") as fh:
                 fh.write(data)
-            log.debug("cached poster for title %s at %s", title_id, path)
+            log.debug("cached poster %s at %s", key, path)
         except OSError as exc:
-            log.debug("could not cache poster for title %s: %s", title_id, exc)
+            log.debug("could not cache poster %s: %s", key, exc)
         return data, POSTER_TYPES[extension]
 
     def decide(self, title_id, action):

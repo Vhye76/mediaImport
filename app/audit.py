@@ -278,6 +278,7 @@ class Auditor:
         self.thread = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
+        self._restart = threading.Event()
         self._status = {
             "running": False,
             "done": 0,
@@ -300,6 +301,12 @@ class Auditor:
         )
 
     def sweep_now(self):
+        self._wake.set()
+
+    def rescan(self):
+        removed = self.store.audit_forget_all()
+        log.info("library audit findings wiped, %d row(s), full rescan requested", removed)
+        self._restart.set()
         self._wake.set()
 
     def status(self):
@@ -338,13 +345,14 @@ class Auditor:
                     yield kind, os.path.join(dirpath, name)
 
     def _sweep(self):
+        self._restart.clear()
         files = list(self._files())
         self._set(running=True, done=0, total=len(files), started_at=time.time(), finished_at=None)
         log.info("library audit pass over %d file(s)", len(files))
         seen = []
         assessed = 0
         for kind, path in files:
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self._restart.is_set():
                 break
             seen.append(path)
             try:
@@ -370,7 +378,8 @@ class Auditor:
             self._set(done=len(seen), current=None)
             if self.stop_event.wait(self.cfg.audit_interval):
                 break
-        removed = self.store.audit_forget_missing(seen) if not self.stop_event.is_set() else 0
+        interrupted = self.stop_event.is_set() or self._restart.is_set()
+        removed = self.store.audit_forget_missing(seen) if not interrupted else 0
         self._set(running=False, finished_at=time.time(), current=None)
         totals = self.store.audit_totals()
         log.info(

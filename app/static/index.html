@@ -87,9 +87,12 @@
   .counter { font-size: 13px; color: var(--dim); cursor: pointer;
              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
              padding: 3px 8px; border-radius: 5px; border: 1px solid transparent;
-             white-space: nowrap; }
+             white-space: nowrap; display: flex; justify-content: space-between;
+             gap: 12px; align-self: stretch; }
   .counter:hover { border-color: var(--accent); color: var(--accent); }
-  .counter b { color: var(--ink); font-weight: 600; margin-left: 6px; }
+  .counter b { color: var(--ink); font-weight: 600; margin-left: auto; }
+  .counter.static { cursor: default; }
+  .counter.static:hover { border-color: transparent; color: var(--dim); }
 
   /*----- Dialogs */
   button { background: #232833; color: var(--ink); border: 1px solid var(--line);
@@ -194,9 +197,10 @@
   </section>
 
   <div id="corner">
+    <div class="counter" id="c-audit" onclick="showAudit()" style="display:none">Library findings: <b>0</b></div>
+    <div class="counter static" id="c-scan" style="display:none">Scanning: <b>0/0</b></div>
     <div class="counter" id="c-quar" onclick="showList('QUARANTINED')">Quarantined Files: <b>0</b></div>
     <div class="counter" id="c-fail" onclick="showList('FAILED')">Failed Jobs: <b>0</b></div>
-    <div class="counter" id="c-audit" onclick="showAudit()" style="display:none">Library findings: <b>0</b></div>
   </div>
 </main>
 
@@ -258,8 +262,8 @@ function label(t) { return t.title || t.show || base(t.source_path); }
 //----- Artwork, with a text placeholder on the same footprint
 function art(t, phText) {
   const ph = `<div class="ph">${esc(phText || base(t.source_path))}</div>`;
-  const img = t.poster_url
-    ? `<img src="/api/poster/${t.id}" alt="" loading="lazy"
+  const img = t.poster
+    ? `<img src="/api/poster/${t.poster}" alt="" loading="lazy"
             onerror="this.style.display='none'">`
     : "";
   return `<div class="art">${ph}${img}</div>`;
@@ -373,8 +377,9 @@ async function refresh() {
   $("c-fail").innerHTML = `Failed Jobs: <b>${f}</b>`;
   const a = s.audit || {};
   $("c-audit").style.display = a.enabled ? "" : "none";
-  $("c-audit").innerHTML = `Library findings: <b>${a.findings || 0}</b>`
-    + (a.running ? ` <span style="color:var(--dim)">scanning ${a.done}/${a.total}</span>` : "");
+  $("c-audit").innerHTML = `Library findings: <b>${a.findings || 0}</b>`;
+  $("c-scan").style.display = a.enabled && a.running ? "" : "none";
+  $("c-scan").innerHTML = `Scanning: <b>${a.done || 0}/${a.total || 0}</b>`;
 }
 
 //----- Detail dialog
@@ -599,7 +604,8 @@ async function renderAudit() {
   bits.push(`${st.audited || 0} files audited`);
   if (!st.running && st.next_at) bits.push(`next pass ${when(st.next_at)}`);
   $("lst-acts").innerHTML = `<span class="lbl">${bits.join(" &middot; ")}</span>
-     <button onclick="sweepNow()">Sweep now</button>`;
+     <button onclick="sweepNow()">Sweep now</button>
+     <button onclick="rescanAll()">Rescan entire library</button>`;
   $("lst-acts").style.display = "";
 
   const html = rows.length === 0
@@ -661,6 +667,12 @@ async function importFinding(id) {
 
 async function sweepNow() {
   try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
+  catch (e) {}
+  renderAudit();
+}
+
+async function rescanAll() {
+  try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rescan: true})}); }
   catch (e) {}
   renderAudit();
 }
