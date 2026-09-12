@@ -1084,6 +1084,7 @@ class Orchestrator:
         return "quarantined"
 
     #----- Library repair
+    #----- Library repair copies and operator retries
     def refresh_lookup(self, title_id):
         self._fresh_lookups.add(title_id)
 
@@ -1146,6 +1147,7 @@ class Orchestrator:
             record = dict(record)
         copying = not record["done"] and record["error"] is None
         percent = None
+        #----- progress is the size of the growing '.part', no callback in the copy.
         if copying and record["total"]:
             try:
                 percent = 100.0 * os.path.getsize(record["destination"] + ".part") / record["total"]

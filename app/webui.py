@@ -26,6 +26,7 @@ POSTER_TYPES = {
 POSTER_CACHE_CONTROL = "public, max-age=604800, immutable"
 
 
+#----- the key is also the cache file name, so nothing but hex may reach the path join.
 POSTER_KEY = re.compile(r"^[0-9a-f]{64}$")
 
 

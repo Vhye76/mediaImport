@@ -248,23 +248,27 @@ HDR is compared on presence at gate 1, and on declaration in the table.  A Matro
 
 A provider ID is never guessed.  Resolution goes through Wikidata and then verifies against the TMDB or TVDB page before an ID is written anywhere, because Wikidata's provider IDs can be flat wrong.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, since TVDB governs episode titles and numbering.  Requests are spaced about three seconds apart, and every answer is cached on disk under 'config/cache', which is consulted before any request is made.
 
-A file that has already been through this pipeline, or that came back out of a library, states what it is:  embedded tags, then ids in the filename, then ids in the folder, then the segment title are all tried before the cleaned filename is.  A fresh disc rip has none of those, so for that case the filename is all there is.
+A file that has already been through this pipeline, or that came back out of a library, states what it is:  embedded tags, then ids in the filename, then ids in the folder, then ids in the library folder a repair copy came from, then the segment title are all tried before the cleaned filename is.  Television runs the same ladder in the same shape, with the COLLECTION block, the show folder and the origin folder ahead of the show name.  A fresh disc rip has none of those, so for that case the filename is all there is.
+
+A filename has already lost the provider's punctuation, and Wikidata's prefix search stops at a colon, so a search is matched under the naming rules rather than by string:  every candidate's label is put through the same transform the filename went through, a full-text search covers the entities the prefix search cannot reach, and a candidate whose release year is more than a year from the name's is skipped.  'Star Wars Episode IV A New Hope' and 'Futurama Bender's Game' both resolve from their filename form.
 
 Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  A fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, and a title that cannot be identified at all holds.
+
+Every answer is cached without expiry, an empty search result included, so a title held for an unresolvable name would hold again identically on any requeue.  Retry on a held title therefore asks the providers again, bypassing the cache for that one identification;  Force through does not, and carries the title on without an ID.
 
 THERE IS NO OFFLINE MODE, and this is the one that reads as a hang.  A container with no outbound access cannot identify anything, so every title holds on the backoff described above and then waits for a person.  That is the intended behaviour rather than a fault, but it is worth knowing before pointing this at an isolated network.
 
 A title that cannot be identified holds, and Force through carries it on without an ID rather than guessing one.  A forced unidentified title keeps the name it arrived with, extension changed to '.mkv', carries a tag block holding TITLE only, and lands flat in 'complete/' instead of in a provider-named folder, so it is visibly unlike finished work.
 
-Cover art is a by-product of the same lookup.  The poster comes off the TMDB page already fetched to verify the title, with TVDB as the fallback for a show that resolved without a TMDB id, and there is no API key involved.  Posters are cached under 'config/cache/posters' and served from '/api/poster', so the browser never contacts an image CDN and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch that fails serves 404 and the tile falls back to text;  artwork is never allowed to become a failure the pipeline notices.
+Cover art is a by-product of the same lookup.  The poster comes off the TMDB page already fetched to verify the title, with TVDB as the fallback for a show that resolved without a TMDB id, and there is no API key involved.  Posters are cached under 'config/cache/posters' and served from '/api/poster/<hash>', keyed on the artwork URL rather than the title so a long browser cache header stays honest across a store wipe, and the browser never contacts an image CDN and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch that fails serves 404 and the tile falls back to text;  artwork is never allowed to become a failure the pipeline notices.
 
 ## Library audit
 
-A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a tag TITLE that does not transform to the filename, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  Resolution, bit depth, codec and letterbox are never findings.
+A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.
 
-It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  It never starts when no library is mounted.
+It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
-Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in flight.
+Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in flight.  The copy runs in the background with a progress bar under the finding's buttons, and once it is in 'import/' the button reads In Pipeline until the title retires, clickable through to the title once the watcher has picked it up.
 
 ## One instance at a time
 
@@ -287,19 +291,19 @@ GET  /api/status                  config, GPU state, encode space, stage counts,
 GET  /api/titles                  every title
 GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue, held and failed titles together
-GET  /api/poster/<id>             cached cover art, 404 when there is none
+GET  /api/poster/<hash>           cached cover art by the 'poster' hash on a title, 404 when there is none
 GET  /api/logs                    log tail
 GET  /api/audit                   sweep status and every library finding
-POST /api/audit                   start a sweep now
-POST /api/audit/<id>/import       copy that finding's file into import/ for repair
+POST /api/audit                   start a sweep now;  {"rescan": true} wipes the findings first
+POST /api/audit/<id>/import       copy that finding's file into import/ for repair, in the background
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
 A strip along the top carries the output codec, the GPU state, free space in the encode area, whether a library is mounted and a DRY_RUN badge, so a degraded GPU or an unmounted library is visible without opening anything.
 
-The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters for quarantined files and failed jobs in the lower right.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
+The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters in the lower right:  library findings, with a scanning line beneath it while a pass runs, then quarantined files and failed jobs.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
 
-Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The three counters are clickable and list what is in them:  quarantined files, failed jobs, and library findings, the last with a Details table per file and an Import action per row.
+Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The three counters are clickable and list what is in them:  library findings, quarantined files and failed jobs, the first with a Details table per file, an Import action per row, and Sweep now and Rescan entire library in its header.
 
 A television tile opens the episode list instead.  Every row carries the same decisions as a tile, and the header carries them for the whole season at once, so clearing a held season is one action rather than one per episode.  A season action closes the list, because there is nothing left in it to show.
 
@@ -352,7 +356,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.2.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
+Current version 0.5.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

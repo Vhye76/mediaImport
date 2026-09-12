@@ -78,6 +78,7 @@ class Client:
         self._local = threading.local()
         os.makedirs(self.cache_dir, exist_ok=True)
 
+    #----- Thread-local, so a bypass on one assessment worker leaves the others on the cache.
     class _Fresh:
         def __init__(self, client):
             self.client = client
@@ -290,6 +291,7 @@ class Provider:
         data = self.client.fetch_json(WIKIDATA_ENTITY % qid)
         return (data.get("entities") or {}).get(qid) or {}
 
+    #----- P4983 is TMDB's series id, not a TVDB id;  TVDB comes from P4835 alone.
     def ids_from_entity(self, entity, kind="movie"):
         tmdb = _claims(entity, P_TMDB if kind == "movie" else P_TMDB_TV)
         imdb = _claims(entity, P_IMDB)
@@ -527,6 +529,8 @@ class Provider:
             title, year, _movie_search_terms(title, year), self._accept_search_hit,
         )
 
+    #----- Prefix hits already matched the whole string, so they are ordered by score but not cut;
+    #----- full-text hits matched on any word and must clear the cutoff.
     def _resolve_by_search(self, title, year, terms, accept):
         wanted = titles.normalise_for_match(title)
         seen = set()
@@ -634,6 +638,7 @@ class Provider:
         if status != 200:
             return []
         found = _catalogue_entries(EPISODE_LABEL.findall(body))
+        #----- allseasons omits season 0;  the specials sit on their own page as a plain table.
         if not any(e["season"] == 0 for e in found):
             status, body = self.client.fetch(TVDB_SPECIALS % (slug, order))
             if status == 200:
@@ -754,6 +759,7 @@ def _name_score(title, wanted, name):
         return 0.0
     if other == wanted:
         return 1.0
+    #----- 'Return of the Jedi' inside 'Star Wars: Episode VI – Return of the Jedi'.
     if " %s " % wanted in " %s " % other:
         return CONTAINED_SCORE
     return difflib.SequenceMatcher(None, wanted, other).ratio()

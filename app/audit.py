@@ -63,6 +63,7 @@ def _year_of(value):
     return int(match.group(1)) if match else None
 
 
+#----- Reading the identity out of the tag block
 def _tag_identity(root, kind):
     found = {
         "title": None, "show": None, "present": set(), "flattened": [],
@@ -93,6 +94,7 @@ def _tag_identity(root, kind):
     return found
 
 
+#----- Naming rows, built by the same functions the publish step uses
 def _build(fn, *args):
     try:
         return fn(*args)
@@ -144,6 +146,7 @@ def _tv_naming_rows(path, found):
             _row("season folder", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
             _row("file name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
         ]
+    #----- the COLLECTION block carries no year, so the folder's own is used and everything else is checked.
     years = titles.YEAR_IN_PARENS.findall(show_dir)
     show_year = years[-1] if years else "YYYY"
     show = _build(titles.show_folder, found["show"], show_year, found["tvdb"], found["tmdb"])
@@ -378,6 +381,7 @@ class Auditor:
             self._set(done=len(seen), current=None)
             if self.stop_event.wait(self.cfg.audit_interval):
                 break
+        #----- an interrupted pass has not seen every file, so it must not prune the ones it missed.
         interrupted = self.stop_event.is_set() or self._restart.is_set()
         removed = self.store.audit_forget_missing(seen) if not interrupted else 0
         self._set(running=False, finished_at=time.time(), current=None)
