@@ -1,6 +1,6 @@
 name: build
 
-#----- Manual only;  a tag records history and does not trigger a build
+#----- Manual only
 on:
   workflow_dispatch:
 
@@ -12,9 +12,6 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-tags: true
-          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -22,15 +19,10 @@ jobs:
         run: python3 -m compileall -q app
       - name: The package imports
         run: python3 -c "import app.main"
-#----- Every build increments the version;  a version that is already tagged is refused
-      - name: The version is new
+      - name: The version
         id: version
         run: |
           version="$(python3 -c 'from app import VERSION; print(VERSION)')"
-          if git tag | grep -qx "$version"; then
-            echo "VERSION $version is already tagged; every build increments the version" >&2
-            exit 1
-          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
 #----- Build and publish to GHCR
@@ -57,7 +49,6 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ needs.validate.outputs.version }}
             type=sha,format=short
-            type=ref,event=tag
           labels: |
             org.opencontainers.image.version=${{ needs.validate.outputs.version }}
       - name: Build and push

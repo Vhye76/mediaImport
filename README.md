@@ -328,7 +328,7 @@ docker build -t mediaimport:local .
 
 The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, or if its libx265 wrapper has no '-dolbyvision' option.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
 
-The image is Alpine 3.24, 282 MB, everything from Alpine's own repositories.  Every build increments the version in 'app/__init__.py';  the workflow refuses a version that is already tagged.
+The image is Alpine 3.24, 282 MB, everything from Alpine's own repositories.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
 
 Functionality is validated against the built container by hand, following 'TESTPLAN.md'.  That plan measures outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.7.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
+Current version 0.7.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 
