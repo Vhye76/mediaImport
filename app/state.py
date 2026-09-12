@@ -66,6 +66,10 @@ def is_complete(stage):
     return stage in COMPLETE
 
 
+def in_pipeline(stage):
+    return stage != QUARANTINED
+
+
 #----- Schema
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS titles (

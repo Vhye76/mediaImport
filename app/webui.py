@@ -195,7 +195,7 @@ class WebUI:
         finding["copy"] = self.orchestrator.import_progress(finding["id"])
         if title_id:
             row = self.store.get(title_id)
-            if row and row["stage"] not in state.TERMINAL + state.STOPPED:
+            if row and state.in_pipeline(row["stage"]):
                 finding["in_pipeline"] = {
                     "id": row["id"],
                     "stage": row["stage"],

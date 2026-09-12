@@ -118,6 +118,7 @@ class Orchestrator:
         self.stop_event = threading.Event()
         self.started_at = time.time()
         self._seen_sizes = {}
+        self._blocked_paths = set()
         self._procs = set()
         self._procs_lock = threading.Lock()
         self._progress = {}
@@ -268,6 +269,7 @@ class Orchestrator:
             return
         for gone in [p for p in self._seen_sizes if not os.path.exists(p)]:
             del self._seen_sizes[gone]
+        self._blocked_paths = {p for p in self._blocked_paths if os.path.exists(p)}
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             for name in sorted(filenames):
@@ -280,7 +282,7 @@ class Orchestrator:
                     continue
                 existing = self.store.by_source(path)
                 if existing:
-                    if existing["stage"] in state.TERMINAL:
+                    if not state.in_pipeline(existing["stage"]):
                         log.info(
                             "title %s %s reappeared in import after %s, treating it as a new import",
                             existing["id"], name, existing["stage"],
@@ -288,6 +290,14 @@ class Orchestrator:
                         self.store.reset_for_reimport(existing["id"])
                         self.store.link_import(existing["id"], path)
                         self.queue.put(existing["id"])
+                    elif state.is_complete(existing["stage"]):
+                        #----- once per path, not once per poll.
+                        if path not in self._blocked_paths:
+                            self._blocked_paths.add(path)
+                            log.info(
+                                "skipping %s, title %s is published from this path and not yet promoted",
+                                name, existing["id"],
+                            )
                     else:
                         log.debug(
                             "skipping %s, title %s already claims this path at stage %s",
@@ -570,8 +580,10 @@ class Orchestrator:
         if result.is_loss:
             raise QuarantineError("not better than the incumbent: %s" % result.reason)
         if result.verdict == compare.AMBIGUOUS:
-            self.store.record(title_id, state.COMPARED, "inconclusive: %s" % result.reason)
-            return [_reason(state.COMPARED, "comparison against the incumbent was inconclusive: %s" % result.reason)]
+            detail = self._ambiguous_detail(identity, incumbent_path, result)
+            log.info("title %s comparison inconclusive: %s", title_id, detail)
+            self.store.record(title_id, state.COMPARED, "inconclusive: %s" % detail)
+            return [_reason(state.COMPARED, "comparison against the incumbent was inconclusive: %s" % detail)]
         self.store.advance(
             title_id, state.COMPARED, "%s (incumbent %s)" % (result.reason, route)
         )
@@ -604,6 +616,21 @@ class Orchestrator:
                 log.warning("cropdetect failed on %s: %s", os.path.basename(str(path)), exc)
                 pairs.append(None)
         return pairs[0], pairs[1]
+
+    @staticmethod
+    def _ambiguous_detail(identity, incumbent_path, result):
+        incumbent_title = (result.incumbent or {}).get("segment_title")
+        incoming_title = identity.get("title")
+        name = os.path.basename(incumbent_path)
+        if (
+            incumbent_title
+            and incoming_title
+            and titles.to_filename(incumbent_title) != titles.to_filename(incoming_title)
+        ):
+            return "the incumbent %r carries a different title, %r; %s" % (
+                name, incumbent_title, result.reason,
+            )
+        return "against %r, %s" % (name, result.reason)
 
     def _find_incumbent(self, identity, kind, skip=None):
         root = self.layout.libraries.get(kind)
@@ -1102,7 +1129,7 @@ class Orchestrator:
             raise ValueError("no such finding")
         if finding.get("imported_title_id"):
             row = self.store.get(finding["imported_title_id"])
-            if row and row["stage"] not in state.TERMINAL + state.STOPPED:
+            if row and state.in_pipeline(row["stage"]):
                 raise ValueError(
                     "already in the pipeline as title %d at %s"
                     % (row["id"], row["stage"])

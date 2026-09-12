@@ -270,7 +270,7 @@ A background sweep over the mounted libraries, looking for every deviation the p
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
-Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in flight.  The copy runs in the background with a progress bar under the finding's buttons, and once it is in 'import/' the button reads In Pipeline until the title retires, clickable through to the title once the watcher has picked it up.
+Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with a progress bar under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
 
 ## One instance at a time
 
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.6.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
+Current version 0.7.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it;  the workflow refuses a version that is already tagged.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  Tags are bare numeric, with no 'v' prefix.  A tag records a point in history;  it does not trigger a build.
 

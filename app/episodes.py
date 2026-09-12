@@ -11,7 +11,8 @@ FUZZY_CUTOFF = 0.82
 
 RANGE_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})[\s._-]*e(\d{1,3})", re.I),
-    re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})\s*[-+&]\s*e?(\d{1,3})", re.I),
+    #----- a bare second number counts only when it sits against the separator;  " - 99" is a title.
+    re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:\s*[-+&]\s*e|[-+&])(\d{1,3})", re.I),
     re.compile(r"(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})\s*[-+&]\s*(?:\d{1,2}x)?(\d{1,3})", re.I),
 )
 
