@@ -1092,6 +1092,7 @@ class Orchestrator:
             return
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
+        self.layout.prune_empty_folders(source, self.layout.imports)
         log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
         self.store.advance(
@@ -1112,6 +1113,7 @@ class Orchestrator:
             return "quarantined"
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
+        self.layout.prune_empty_folders(source, self.layout.imports)
         self.store.advance(
             title_id, state.QUARANTINED, reason, reason=reason, quarantine_path=destination
         )

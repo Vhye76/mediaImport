@@ -19,6 +19,7 @@ jobs:
         run: python3 -m compileall -q app
       - name: The package imports
         run: python3 -c "import app.main"
+#----- The version names the image and its label;  nothing checks it
       - name: The version
         id: version
         run: |

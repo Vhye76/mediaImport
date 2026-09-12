@@ -213,6 +213,18 @@ class Layout:
             os.remove(source)
         return destination
 
+    def prune_empty_folders(self, path, stop):
+        stop = _norm(stop)
+        parent = os.path.dirname(_norm(path))
+        while parent != stop and _under(parent, stop):
+            self.assert_writable(parent)
+            try:
+                os.rmdir(parent)
+            except OSError:
+                return
+            log.info("removed empty folder %s", parent)
+            parent = os.path.dirname(parent)
+
     def _discard_reservation(self, path):
         try:
             os.remove(path)
