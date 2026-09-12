@@ -179,6 +179,9 @@ def probe(path):
         raise ProbeError("no decodable video stream in %s" % path)
 
     if video["hdr"]:
+        #----- ffprobe surfaces the element only when both values are non-zero;  mkvmerge reports it at any value.
+        if video["content_light"] is None and "matroska" in (fmt.get("format_name") or ""):
+            video["content_light"] = _matroska_content_light(path)
         video.update(bitstream_hdr(path))
         video["hdr_declaration_gap"] = hdr_declaration_gap(video)
 
@@ -222,6 +225,24 @@ def probe(path):
             os.path.basename(str(path)), ", ".join(video["hdr_declaration_gap"]),
         )
     return Probe(path, data, container)
+
+
+def _matroska_content_light(path):
+    try:
+        tracks = mkvmerge_json(path).get("tracks") or []
+    except ProbeError as exc:
+        log.debug("mkvmerge could not read %s: %s", path, exc)
+        return None
+    for track in tracks:
+        if track.get("type") != "video":
+            continue
+        props = track.get("properties") or {}
+        if "max_content_light" in props and "max_frame_light" in props:
+            return _content_light_from(
+                {"max_content": props["max_content_light"], "max_average": props["max_frame_light"]}
+            )
+        return None
+    return None
 
 
 def _size_on_disk(path):

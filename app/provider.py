@@ -31,6 +31,15 @@ P_TVDB = "P4835"
 P_TMDB_TV = "P4983"
 P_RELEASE = "P577"
 P_START = "P580"
+ID_PROPERTIES = {
+    "movie": (("tmdb", P_TMDB), ("imdb", P_IMDB)),
+    "tv": (("tvdb", P_TVDB), ("tmdb", P_TMDB_TV)),
+}
+#----- A show's tmdb is required for its folder name but is not a condition of accepting the entity.
+REQUIRED = {
+    "movie": ("title", "year", "tmdb", "imdb"),
+    "tv": ("show", "show_year", "tvdb", "tmdb"),
+}
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 WIKIDATA_ENTITY = "https://www.wikidata.org/wiki/Special:EntityData/%s.json"
@@ -50,6 +59,12 @@ TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
 TVDB_SERIES = "https://thetvdb.com/series/%s"
 TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
 TVDB_SPECIALS = "https://thetvdb.com/series/%s/seasons/%s/0"
+
+PAGE_TITLE = re.compile(r"<title>\s*(.*?)\s*</title>", re.I | re.S)
+#----- TMDB titles pages 'Name (2015)' for a film and 'Name (TV Series 1984)' for a show;  TVDB 'Name (2003)' or bare.
+PAGE_YEAR = re.compile(r"\s*\((?:TV Series\s+)?(\d{4})\)\s*$")
+#----- TMDB's separator arrives as '&#8212;', an em dash once unescaped;  TVDB's is a hyphen.
+SITE_SUFFIX = re.compile(r"\s+(?:\u2014|-)\s+(?:The Movie Database \(TMDB\)|TheTVDB\.com)\s*$")
 
 EPISODE_LABEL = re.compile(
     r'episode-label">S(\d{1,2})E(\d{1,3})</span>.*?<a[^>]*>\s*(.*?)\s*</a>',
@@ -304,16 +319,14 @@ class Provider:
             "year": _year(released) if released else None,
         }
 
-    def verify_tmdb(self, kind, tmdb_id, title):
+    def verify_tmdb(self, kind, tmdb_id, names, year=None):
         url = (TMDB_MOVIE if kind == "movie" else TMDB_TV) % tmdb_id
         status, body = self.client.fetch(url)
         if status != 200:
             return False
-        needle = re.sub(r"[^a-z0-9]+", "", title.lower())
-        haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
-        return needle in haystack
+        return _page_confirms(body, names, year, "tmdb %s" % tmdb_id)
 
-    def verify_tvdb(self, tvdb_id, name):
+    def verify_tvdb(self, tvdb_id, names, year=None):
         try:
             status, body = self.client.fetch(TVDB_SERIES % self.series_slug(tvdb_id))
         except urllib.error.HTTPError as exc:
@@ -326,9 +339,7 @@ class Provider:
             return False
         if status != 200:
             return False
-        needle = re.sub(r"[^a-z0-9]+", "", name.lower())
-        haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
-        return needle in haystack
+        return _page_confirms(body, names, year, "tvdb %s" % tvdb_id)
 
     def tmdb_poster(self, kind, tmdb_id):
         if not tmdb_id:
@@ -387,7 +398,7 @@ class Provider:
             if not name:
                 continue
             ids = titles.ids_from_name(name)
-            if ids["tmdb"] and ids["imdb"]:
+            if ids["tmdb"] or ids["imdb"]:
                 rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
 
         segment = (container or {}).get("segment_title")
@@ -410,42 +421,7 @@ class Provider:
         return rungs
 
     def identify_movie(self, source, container, origin=None):
-        for rung, ids, title, year in self.movie_candidates(source, container, origin):
-            resolved = self.accept_candidate(rung, ids, title, year)
-            if resolved is not None:
-                log.info(
-                    "identified from %s: %s (%s) tmdb=%s imdb=%s",
-                    rung, resolved.get("title"), resolved.get("year"),
-                    resolved.get("tmdb"), resolved.get("imdb"),
-                )
-                return resolved
-            log.debug("rung %s did not resolve", rung)
-        return None
-
-    def accept_candidate(self, rung, ids, title, year):
-        tmdb = (ids or {}).get("tmdb")
-        imdb = (ids or {}).get("imdb")
-        if tmdb and imdb and title and year:
-            if not self.verify_tmdb("movie", tmdb, title):
-                log.info(
-                    "%s carried tmdb %s but the TMDB page does not confirm %r, rejected",
-                    rung, tmdb, title,
-                )
-                return None
-            return {
-                "title": title,
-                "year": year,
-                "tmdb": tmdb,
-                "imdb": imdb,
-                "qid": None,
-                "identified_from": rung,
-            }
-        if not title:
-            return None
-        resolved = self.resolve_movie(title, year)
-        if resolved is not None:
-            resolved["identified_from"] = rung
-        return resolved
+        return self._identify_from(self.movie_candidates(source, container, origin), "movie")
 
     #----- The show identity ladder
     def show_candidates(self, source, origin=None):
@@ -472,7 +448,7 @@ class Provider:
             if not name:
                 continue
             ids = titles.ids_from_name(name)
-            if ids["tvdb"]:
+            if ids["tvdb"] or ids["tmdb"]:
                 rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
 
         guess = _clean_show_name(stem, parent)
@@ -483,60 +459,67 @@ class Provider:
         return rungs
 
     def identify_show(self, source, origin=None):
-        for rung, ids, name, year in self.show_candidates(source, origin):
-            resolved = self.accept_show_candidate(rung, ids, name, year)
-            if resolved is not None:
-                log.info(
-                    "identified show from %s: %s (%s) tvdb=%s tmdb=%s",
-                    rung, resolved.get("show"), resolved.get("show_year"),
-                    resolved.get("tvdb"), resolved.get("tmdb"),
-                )
-                return resolved
-            log.debug("rung %s did not resolve", rung)
+        return self._identify_from(self.show_candidates(source, origin), "tv")
+
+    #----- The walk, shared by both kinds
+    def _identify_from(self, rungs, kind):
+        for rung, ids, name, year in rungs:
+            pinned = {
+                field: (ids or {}).get(field)
+                for field, _prop in ID_PROPERTIES[kind]
+                if (ids or {}).get(field)
+            }
+            if pinned:
+                resolved = self._resolve_by_ids(pinned, name, year, kind)
+            elif name:
+                resolved = self._resolve_by_search(name, year, kind)
+            else:
+                resolved = None
+            if resolved is None:
+                log.debug("rung %s did not resolve", rung)
+                continue
+            resolved["identified_from"] = rung
+            resolved["missing"] = [f for f in REQUIRED[kind] if not resolved.get(f)]
+            log.info(
+                "identified from %s: %s (%s) %s",
+                rung, resolved.get("title") or resolved.get("show"),
+                resolved.get("year") or resolved.get("show_year"),
+                " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+            )
+            return resolved
         return None
 
-    def accept_show_candidate(self, rung, ids, name, year):
-        tvdb = (ids or {}).get("tvdb")
-        tmdb = (ids or {}).get("tmdb")
-        if not name:
-            return None
-        if tvdb:
-            if not self.verify_tvdb(tvdb, name):
-                log.info(
-                    "%s carried tvdb %s but the TVDB page does not confirm %r, rejected",
-                    rung, tvdb, name,
-                )
-                return None
-            if tmdb and not self.verify_tmdb("tv", tmdb, name):
-                log.info("%s carried tmdb %s but the TMDB page does not confirm %r, dropped", rung, tmdb, name)
-                tmdb = None
-            return {
-                "show": name,
-                "show_year": year,
-                "tvdb": tvdb,
-                "tmdb": tmdb,
-                "qid": None,
-                "identified_from": rung,
-            }
-        resolved = self.resolve_show(name, year)
-        if resolved is not None:
-            resolved["identified_from"] = rung
-        return resolved
-
     #----- Wikidata search paths
-    def resolve_movie(self, title, year=None):
-        return self._resolve_by_search(
-            title, year, _movie_search_terms(title, year), self._accept_search_hit,
+    def _resolve_by_ids(self, pinned, name, year, kind):
+        qids = []
+        for field, prop in ID_PROPERTIES[kind]:
+            if not pinned.get(field):
+                continue
+            #----- CirrusSearch matches a statement directly, so an id finds its entity without a name.
+            for qid in self.search_text("haswbstatement:%s=%s" % (prop, pinned[field])):
+                if qid not in qids:
+                    qids.append(qid)
+        if not qids:
+            log.info("no Wikidata entity carries %s", _describe(pinned))
+            return None
+        name = name or ""
+        return self._resolve_from(
+            "ids:%s" % _describe(pinned), self.labels(qids), name,
+            titles.normalise_for_match(name), year, set(), kind, cutoff=0.0, pinned=pinned,
         )
 
     #----- Prefix hits already matched the whole string, so they are ordered by score but not cut;
     #----- full-text hits matched on any word and must clear the cutoff.
-    def _resolve_by_search(self, title, year, terms, accept):
+    def _resolve_by_search(self, title, year, kind):
+        if kind == "movie":
+            terms = _movie_search_terms(title, year)
+        else:
+            terms = ("%s (TV series)" % title, title)
         wanted = titles.normalise_for_match(title)
         seen = set()
         for term in terms:
             resolved = self._resolve_from(
-                term, self.search_entities(term), title, wanted, year, seen, accept, cutoff=0.0,
+                term, self.search_entities(term), title, wanted, year, seen, kind, cutoff=0.0,
             )
             if resolved is not None:
                 return resolved
@@ -544,11 +527,11 @@ class Provider:
         if not qids:
             return None
         return self._resolve_from(
-            "text:%s" % title, self.labels(qids), title, wanted, year, seen, accept,
+            "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
             cutoff=TITLE_CUTOFF,
         )
 
-    def _resolve_from(self, term, candidates, title, wanted, year, seen, accept, cutoff):
+    def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None):
         scored = []
         for candidate in candidates:
             if candidate["id"] in seen:
@@ -562,11 +545,12 @@ class Provider:
             if score < cutoff:
                 continue
             scored.append((score, candidate))
+        accept = self._accept_movie_hit if kind == "movie" else self._accept_show_hit
         for score, candidate in sorted(scored, key=lambda pair: -pair[0]):
-            resolved = accept(candidate, title, year)
+            resolved = accept(candidate, title, year, pinned)
             if resolved is None:
                 continue
-            if score < 1.0:
+            if score < 1.0 and not pinned:
                 log.info(
                     "title %r matched %r by similarity %.3f on search %r",
                     title, resolved.get("title") or resolved.get("show"), score, term,
@@ -574,21 +558,24 @@ class Provider:
             return resolved
         return None
 
-    def _accept_search_hit(self, candidate, title, year):
+    def _accept_movie_hit(self, candidate, title, year, pinned=None):
         entity = self.entity(candidate["id"])
         ids = self.ids_from_entity(entity)
         if not ids["tmdb"] or not ids["imdb"]:
             return None
-        if year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
+        if not _carries(ids, pinned, candidate):
+            return None
+        #----- A pinned id outranks a year read off the disk;  the page check still applies.
+        if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
             log.info(
                 "%s %r is a %s release, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
             return None
-        if not self.verify_tmdb("movie", ids["tmdb"], title):
-            log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], title)
+        label = _label(entity) or title
+        if not self.verify_tmdb("movie", ids["tmdb"], _names(entity, label), ids["year"]):
+            log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], label)
             return None
-        label = ((entity.get("labels") or {}).get("en") or {}).get("value") or title
         return {
             "title": label,
             "year": ids["year"] or year,
@@ -597,31 +584,32 @@ class Provider:
             "qid": candidate["id"],
         }
 
-    def resolve_show(self, name, year=None):
-        return self._resolve_by_search(
-            name, year, ("%s (TV series)" % name, name), self._accept_show_hit,
-        )
-
-    def _accept_show_hit(self, candidate, name, year):
+    def _accept_show_hit(self, candidate, name, year, pinned=None):
         entity = self.entity(candidate["id"])
         ids = self.ids_from_entity(entity, kind="tv")
         if not ids["tvdb"]:
             return None
-        if year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
+        if not _carries(ids, pinned, candidate):
+            return None
+        if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
             log.info(
                 "%s %r started in %s, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
             return None
-        if ids["tmdb"] and not self.verify_tmdb("tv", ids["tmdb"], name):
-            log.info("tmdb %s did not confirm show %r", ids["tmdb"], name)
+        label = _label(entity) or name
+        if not self.verify_tvdb(ids["tvdb"], _names(entity, label), ids["year"]):
+            log.info("tvdb %s did not confirm show %r, skipping", ids["tvdb"], label)
             return None
-        label = ((entity.get("labels") or {}).get("en") or {}).get("value") or name
+        tmdb = ids["tmdb"]
+        if tmdb and not self.verify_tmdb("tv", tmdb, _names(entity, label), ids["year"]):
+            log.info("tmdb %s did not confirm show %r, dropped", tmdb, label)
+            tmdb = None
         return {
             "show": label,
             "show_year": ids["year"] or year,
             "tvdb": ids["tvdb"],
-            "tmdb": ids["tmdb"],
+            "tmdb": tmdb,
             "qid": candidate["id"],
         }
 
@@ -662,8 +650,8 @@ class Provider:
             return self.identify_movie(source, container, row.get("origin_path"))
 
         resolved = self.identify_show(source, row.get("origin_path"))
-        if resolved is None:
-            return None
+        if resolved is None or resolved["missing"]:
+            return resolved
 
         slug = self.series_slug(resolved["tvdb"])
         catalogue = self.episodes_for_order(slug, "official")
@@ -698,6 +686,7 @@ class Provider:
             "match_score": score,
             "order_warnings": warnings,
             "identified_from": resolved.get("identified_from"),
+            "missing": [],
         }
 
     def _order_warning(self, slug, aired):
@@ -743,6 +732,65 @@ def _catalogue_entries(rows):
 
 
 #----- Title matching under the section 9 rules
+def _describe(ids):
+    return " ".join("%s=%s" % (k, v) for k, v in ids.items())
+
+
+def _label(entity):
+    return ((entity.get("labels") or {}).get("en") or {}).get("value")
+
+
+def _names(entity, label):
+    aliases = [a.get("value") for a in (entity.get("aliases") or {}).get("en") or []]
+    return [n for n in [label] + aliases if n]
+
+
+def _page_identity(body):
+    m = PAGE_TITLE.search(body)
+    if not m:
+        return None, None
+    text = SITE_SUFFIX.sub("", html.unescape(m.group(1)))
+    year = None
+    ym = PAGE_YEAR.search(text)
+    if ym:
+        year = int(ym.group(1))
+        text = text[: ym.start()]
+    return text.strip() or None, year
+
+
+def _page_confirms(body, names, year, what):
+    names = [n for n in names if n]
+    if not names:
+        return False
+    page_title, page_year = _page_identity(body)
+    if year and page_year and abs(int(year) - page_year) > 1:
+        log.info("%s is titled %r from %s, not %s", what, page_title, page_year, year)
+        return False
+    if page_title:
+        wanted = titles.normalise_for_match(page_title)
+        best = max(_name_score(page_title, wanted, n) for n in names)
+        log.debug("%s page title %r scored %.3f against %s", what, page_title, best, names[0])
+        if best >= TITLE_CUTOFF:
+            return True
+    #----- The body fallback uses the label alone;  a short alias like 'TFA' is found somewhere in any page.
+    needle = re.sub(r"[^a-z0-9]+", "", names[0].lower())
+    haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
+    return needle in haystack
+
+
+def _carries(ids, pinned, candidate):
+    if not pinned:
+        return True
+    for field, value in pinned.items():
+        if str(ids.get(field)) != str(value):
+            log.info(
+                "%s %r carries %s=%s, not %s, skipping",
+                candidate["id"], candidate.get("label"), field, ids.get(field), value,
+            )
+            return False
+    return True
+
+
 def _movie_search_terms(title, year):
     terms = []
     if year:

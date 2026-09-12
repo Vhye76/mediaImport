@@ -366,7 +366,7 @@ file name    Futurama Bender's Game (2008).mkv
 
 Three rules follow:
 
-- Never derive a tag from a folder or file name.  The information needed is already discarded.
+- Never derive a tag from a folder or file name.  The information needed is already discarded.  The identity ladder in section 11 obeys this by construction:  an id read from a folder leads to a provider entity and the entity supplies the title.  Star Wars IV, 2026-09-11, is the incident that made it a construction rather than a convention.
 - Never assert that a tag equals a filename.  Apply the transform to the tag, then compare results.
 - Where a tag and a filename differ by unsafe characters alone, that is expected and is not a defect.  The colon specifically must differ by REMOVAL, not by ' - '.
 
@@ -408,7 +408,9 @@ Movies use tmdbid and imdbid.  Television uses tvdbid and tmdbid, because TVDB g
 
 Resolution goes through Wikidata, then verification:  'wbsearchentities', then 'Special:EntityData/<QID>.json', reading P4947 for a film's TMDB id, P4983 for a series' TMDB id, P345 for IMDb, P4835 for TVDB and P577 for release date.  THE TWO TMDB PROPERTIES ARE NOT INTERCHANGEABLE AND NEITHER IS A TVDB ID.  Until 2026-09-11 the code read only P4947 for TMDB and fell back to P4983 as a TVDB id, so every show resolved with 'tmdb' None and wrote '[tmdbid-None]' into its folder, Murder, She Wrote and Star Trek among them, while a show lacking P4835 would have had a TMDB number dereferenced at TVDB.  'ids_from_entity' now takes the kind and reads the matching property, and TVDB comes from P4835 alone.  Requests are spaced about 3 seconds apart.  CHECK THE HTTP STATUS:  a 429 body fails JSON parsing and looks identical to "not found".
 
-Cross-check before writing an ID.  Fetch the TMDB page and confirm the title matches.  Wikidata provider IDs can be flat wrong:  P4983 for one show held the TMDB movie id of an unrelated 1984 Italian comedy.
+Cross-check before writing an ID.  Fetch the TMDB page and confirm it describes the entity.  Wikidata provider IDs can be flat wrong:  P4983 for one show held the TMDB movie id of an unrelated 1984 Italian comedy.
+
+THE PAGE IS CONFIRMED BY ITS OWN TITLE AND YEAR, AGAINST THE ENTITY'S LABEL AND ALIASES.  Until 2026-09-11 the check was whether the caller's string appeared anywhere in the page body, and the caller's string was whatever the rung supplied.  Star Wars VII held on every rung:  its tag TITLE was the filename form 'Star Wars Episode VII The Force Awakens', TMDB titles the film 'Star Wars: The Force Awakens', and the Wikidata label 'Star Wars: Episode VII – The Force Awakens' is not on the page either;  VIII passed only because its page happened to contain its filename form.  TMDB spells titles its own way, id 11 is plain 'Star Wars' there.  '_page_confirms' now reads the page's '<title>', 'Name (YYYY)' on TMDB, 'Name (TV Series YYYY)' for a show, 'Name (YYYY)' or bare on TVDB, and scores that name against the entity's label and every alias under the section 9 scoring, accepting at 'TITLE_CUTOFF';  the label-in-body test remains as the fallback.  A page year more than one off the entity's rejects regardless, which is what catches a wrong id pointing at a sibling:  an Episode V entity against page 11 scores 0.9 on containment and is rejected on 1977 against 1980.  The TMDB HTML carries no IMDb or TVDB cross-links, checked, so the title and year are all there is.
 
 Searching a bare franchise name returns the franchise entity rather than the film.  Search 'Title (YYYY film)'.
 
@@ -416,7 +418,7 @@ Searching a bare franchise name returns the franchise entity rather than the fil
 
 'wbsearchentities' IS A PREFIX MATCH OVER LABELS AND ALIASES, AND IT STOPS AT PUNCTUATION.  A filename has already had the colon removed and the en dash turned into ' - ', so searching it for an entity whose only labels carry the colon finds nothing.  Measured 2026-09-11 with the pipeline's User-Agent:  'Star Wars Episode IV A New Hope' and 'Star Wars Episode IV A New Hope (1977 film)' both return HTTP 200 with zero hits, while 'Star Wars Episode V The Empire Strikes Back' resolves only because Q181795 happens to carry a colon-free alias.  Whether a film resolves from its filename therefore depended on which aliases a volunteer had entered, which is not a rule.
 
-'provider.resolve_movie' now does three things, in order:
+'provider._resolve_by_search', the name path for both kinds, does three things, in order:
 
 - The two prefix searches as before, then a FULL-TEXT FALLBACK:  'action=query&list=search' is CirrusSearch, tolerant of punctuation, and it ranks the film first for both colon titles measured.  The hits' labels and aliases come back in one 'wbgetentities' call, so the fallback costs two requests rather than one per hit.
 - EVERY CANDIDATE IS SCORED AGAINST THE TITLE THE WAY SECTION 9 SAYS TO COMPARE:  apply 'titles.to_filename' to the label and compare with the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'TITLE_CUTOFF', which is the 0.82 the episode matcher uses;  prefix hits are ordered by score but not cut, because Wikidata already matched the whole string.  Verified 2026-09-11:  A New Hope, Bender's Game, Return of the Jedi against its Episode VI label, and Blade Runner 2049 all resolve, and 'Return of the Jedi' scores 1.0 on the Episode VI label through the containment rule.
@@ -426,42 +428,53 @@ The TMDB page verification is unchanged and still gates every acceptance.  The s
 
 A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR.  'Blade Runner 2049 (2017)' carries two year-shaped numbers and the first one is part of the name.  Take the LAST match, not the first, and do not let the pattern consume its trailing delimiter:  in 'Blade.Runner.2049.2017.1080p' the dot after 2049 is also the dot before 2017, so a consuming pattern finds only one match and last equals first.  Both forms resolve correctly with a lookahead.  Titles that are only a year, 1917 and 2012, are unaffected, because the pattern needs a leading delimiter and there is none at position zero.
 
-### The movie identity ladder
+### The identity ladder
 
-A FILENAME IS THE LAST RESORT, NOT THE FIRST.  A file that has been through this pipeline, or that came back out of a library, already states what it is.  'provider.movie_candidates' builds an ordered list of candidates and the first that resolves and verifies wins:
+A FILENAME IS THE LAST RESORT, NOT THE FIRST.  A file that has been through this pipeline, or that came back out of a library, already states what it is.  'provider.movie_candidates' and 'provider.show_candidates' build an ordered list of rungs and 'provider._identify_from' walks it, the same walk for both kinds;  the first rung that yields a verified identity wins.
 
 ```
+MOVIES
 1  embedded tag     TMDB, IMDB, TITLE and DATE_RELEASED from the MOVIE-targeted block
-2  filename ids     [tmdbid-N] and [imdbid-ttN] parsed out of the file name
+2  filename ids     [tmdbid-N] or [imdbid-ttN] parsed out of the file name
 3  folder ids       the same, parsed out of the containing folder
 3a origin folder    the same, parsed out of the library folder a section 27 repair copy came from
 4  segment title    the Matroska segment Info title
 5  filename         the cleaned file name, the original behaviour
 6  parent folder    the containing folder name, skipped when it is the watched root
+
+SHOWS
+1  embedded tag     TVDB and TMDB from the COLLECTION-targeted block, TITLE as the name
+2  folder ids       [tvdbid-N] or [tmdbid-N] parsed out of the parent, then the grandparent
+2a origin folder    the same on the library folders a section 27 repair copy came from
+3  filename         the cleaned show name, then its parent folder, the original behaviour
 ```
 
 Rung 6 is skipped for a file sitting directly in 'import/', because the parent is then the mount itself and 'import' is not a film.
 
-RUNG 3a EXISTS BECAUSE THE AUDIT COPY LANDS FLAT.  Section 27 copies a library file directly into 'import/', so the '[tmdbid-N] [imdbid-ttN]' folder that section 10 guarantees is left behind and rung 3 sees the watched root.  Measured 2026-09-11:  the library copy of A New Hope, whose finding was a missing tag block and an unset segment title, had nothing for rungs 1 to 4 and fell to the filename, and the filename search failed for the reason recorded under the search rules below.  The row already stores 'origin_path', so the ladder reads the ids out of its parent folder;  the TMDB verification still applies, exactly as on rung 3.
+A RUNG SUPPLIES IDS AND A NAME;  THE PROVIDER SUPPLIES THE IDENTITY.  A rung carrying an id fetches the Wikidata entities that carry that id statement, 'haswbstatement:P4947=11' through the same full-text search the name fallback uses, then reads the entity:  label, year, and the other ids.  A rung with no id searches by name as before.  Either way every candidate goes through one acceptance per kind, '_accept_movie_hit' or '_accept_show_hit':  ids from the entity, the year check on a name search, the TMDB or TVDB page confirmed against the entity's label and aliases, and the LABEL as the title.  For an id rung the entity must carry the rung's id or it is a different title and is skipped;  two entities on one id, TVDB 73545 is both Battlestar Galactica and its miniseries, are ordered by the section 9 score against the rung's name and the first that verifies wins.  Nothing from the disk enters the identity except the ids that led to it.  An id Wikidata does not know falls to the next rung with a log line;  it never falls back to the disk text.
 
-A CANDIDATE CARRYING BOTH IDS AND A YEAR SKIPS THE WIKIDATA SEARCH, but it does NOT skip verification.  It still fetches the TMDB page and confirms the title appears on it, so a stale or hand-edited tag cannot inject a wrong ID.  A candidate that fails verification falls through to the next rung rather than failing the title.
+WHY THE DISK TEXT IS NEVER THE TITLE.  Until 2026-09-11 every id rung used the on-disk text as the identity's title and took the rung as final however incomplete it was, and the movie and show paths did it differently.  Four shapes of that, all measured that day on repair copies:
+
+- Star Wars IV had no tag block, fell to 'origin folder ids', took 'Star Wars Episode IV A New Hope' from the folder and wrote it into the MOVIE tag as TITLE.  V and VI had blocks and published correctly as 'Star Wars Episode V - The Empire Strikes Back'.  IV's tag was a filename wearing a tag, the exact thing section 9 forbids, and the audit could never catch it because folder, file and tag agreed.
+- Three Murder, She Wrote copies, the ones the 0.2.0 defect above had written with no TMDB, resolved from the embedded block with 'tmdb=None' while the folder beside them said '[tmdbid-484]'.
+- Every show resolved from an embedded block carried 'show_year None', because the COLLECTION block has no year, and published into 'Brooklyn Nine-Nine (None) [tvdbid-269586] [tmdbid-48891]'.
+- Star Wars VII held on every rung because its tag TITLE was the filename form, per the verification note above.
+
+Measured 2026-09-11 with the pipeline's User-Agent:  'haswbstatement:P4947=11' returns Q17738, 'haswbstatement:P345=tt0076759' the same, 'haswbstatement:P4835=78049' Q833322, 'haswbstatement:P4835=73545' two entities.  One request per rung, cached like every other 200.  All four shapes resolve:  IV to 'Star Wars: Episode IV – A New Hope' from its origin folder, VII to its label from its tag, Murder, She Wrote to tmdb 484 and 1984 from a TVDB-only block, Battlestar to the series over the miniseries.
+
+Consequences, stated:  every identification touches Wikidata, including rung 1, which had needed only a TMDB or TVDB page;  a tag TITLE that differs from the label is rewritten to the label on the way through, which is what section 27 already says rung 1 does;  a movie whose folder carries ids Wikidata does not know falls to the name search rather than short-circuiting on the folder text.
+
+AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, TMDB and IMDB;  a show needs show, year, TVDB and TMDB.  '_accept_show_hit' does not reject an entity for lacking P4983, because that would let a lower-scored entity, a different show, win the search;  the identity comes back with a 'missing' list instead and the orchestrator holds with the field named:  'resolved tvdb 78049 (Murder, She Wrote) but tmdb could not be determined from the Wikidata entity; an ID is never guessed'.  Force takes it through unidentified per section 2.  Behind that, 'titles.movie_folder', 'movie_filename', 'show_folder' and 'episode_filename' raise 'TitleError' on a None, so '(None)' and '[tmdbid-None]' can never be formatted into a name again.
+
+A stale or hand-edited tag cannot inject a wrong ID:  the id leads to an entity, and the entity's page has to confirm it.  A rung that fails verification falls through to the next rung rather than failing the title.
 
 The rung that produced an identity is recorded in the stage detail, so a wrong match can be traced to its source instead of guessed at.
 
 Measured 2026-09-07:  a fresh ARM rip carries no tags, no segment title and no folder ids, so only rungs 5 and 6 apply to it.  This ladder improves re-imports and library-shaped files;  it does nothing for a disc rip whose name says nothing.
 
-### The show identity ladder
+RUNG 3a EXISTS BECAUSE THE AUDIT COPY LANDS FLAT.  Section 27 copies a library file directly into 'import/', so the '[tmdbid-N] [imdbid-ttN]' folder that section 10 guarantees is left behind and rung 3 sees the watched root.  Measured 2026-09-11:  the library copy of A New Hope, whose finding was a missing tag block and an unset segment title, had nothing for rungs 1 to 4 and fell to the filename, and the filename search failed for the reason recorded under the search rules above.  The row already stores 'origin_path', so the ladder reads the ids out of its parent folder.
 
-THE SAME SHAPE, ON PURPOSE.  'provider.show_candidates' builds the list and 'identify_show' takes the first rung that resolves and verifies;  the movie and show paths share 'resolve_by_search', the scoring, the text fallback and the year check, and a change to one is a change to both.
-
-```
-1  embedded tag     TVDB and TMDB from the COLLECTION-targeted block, TITLE as the name
-2  folder ids       [tvdbid-N] parsed out of the parent, then the grandparent
-2a origin folder    the same on the library folders a section 27 repair copy came from
-3  filename         the cleaned show name, then its parent folder, the original behaviour
-```
-
-A rung carrying a TVDB id skips the Wikidata search but not verification:  'verify_tvdb' dereferences the id to its series page and confirms the name appears on it, the way 'verify_tmdb' does for films, and a TMDB id beside it is verified separately and dropped rather than rejected when the page does not confirm it, because TVDB governs television.  A 404 from the dereferrer is "not confirmed";  a network failure is transient.  Verified 2026-09-11:  the Murder, She Wrote repair copy resolves on rung 2a with both ids and no search, and from rung 3 with the same ids when no origin is given.
+'verify_tvdb' dereferences the id to its series page;  a 404 from the dereferrer is "not confirmed" and a network failure is transient.  A TMDB id on a show entity that its page does not confirm is dropped rather than rejecting the entity, because TVDB governs television;  the identity then holds as incomplete.
 
 TVDB'S 'allseasons' PAGE OMITS SEASON 0.  Measured 2026-09-11 on Murder, She Wrote:  264 episode labels on 'allseasons/official' and not one 'S00', while '/seasons/official/0' lists six specials in a plain table.  So no special had ever been in the catalogue, every special fell back to source numbering with the filename as its title, and section 17's season 0 note was hiding it.  'episodes_for_order' now reads the season 0 page as well when the order carries no specials.  A special TVDB does not list still falls back, with the warning, which is the correct outcome for a crossover episode numbered by hand.
 
@@ -585,6 +598,8 @@ A Matroska file declares its HDR metadata twice, and the two can disagree.  The 
 MEASURED 2026-09-10 ACROSS THE LIBRARY:  215 movies hold 8 HDR titles, all HEVC Main 10, PQ, bt2020.  Every one carries ST 2086 and CLL in the bitstream.  Three declare no ST 2086 in the container and four declare no CLL, and Saving Private Ryan declares nothing at all while its SEI carries everything.  ffmpeg's own x265 output from a source with no side data, a filter graph for instance, produces exactly that shape:  full SEI, empty container.
 
 THE PROBE READS BOTH SURFACES.  'probe.probe' keeps the container's mastering display and content light level from the stream side data, and for any stream '_is_hdr' accepts it runs a second, narrow ffprobe over the first twelve frames for the SEI.  'hdr_declaration_gap' names every declaration the bitstream carries that the container lacks or states differently.  The bitstream is authoritative:  a container that disagrees with its own SEI is repaired to match, silently, and the change is recorded in the stage history.
+
+A ZERO CONTENT LIGHT PAIR IS WRITTEN LIKE ANY OTHER, AND READ BACK THROUGH MKVMERGE.  Saving Private Ryan and Forrest Gump carry a content light SEI of MaxCLL 0, MaxFALL 0, the encoder's "not indicated".  The repair wrote the pair faithfully, and both titles then held at READY and again at VERIFIED with 'container lacks content_light', because libavformat surfaces a Matroska content light element only when both values are non-zero.  Measured 2026-09-11 on the workstation:  0/0 and 1000/0 written by mkvpropedit are invisible to ffprobe, 1000/400 is visible, and 'mkvmerge -J' reports all three as 'max_content_light' and 'max_frame_light'.  So for an HDR Matroska stream on which ffprobe reports no content light, 'probe.probe' reads those two properties from 'mkvmerge -J', one header read, and a present element is a declaration whatever its numbers.  The gap then compares the written 0/0 against the bitstream 0/0 and finds none, the readiness gate sees the declaration on the output, and the audit sees it on a repaired library file.  Nothing keys on the value;  the container is read with a tool that can see a zero.  The two forced copies in 'complete/' from before the read carry the element and match their bitstream.
 
 THE REPAIR IS A HEADER EDIT ON THE REMUX PATH.  'media.repair_hdr_declaration' runs beside 'fix_flags_and_language', through mkvpropedit, and writes the ST 2086 chromaticities and luminances and the two light levels from the bitstream figures.  mkvpropedit takes floats and spells the properties 'color-', not 'colour-';  ffprobe reports the same figures back as rationals, so 0.68 reads back as 11408507/16777216 and 0.0001 as 209800/2098000053.  A file with no mastering metadata on either surface is left alone;  HLG in particular is legitimate without it, and nothing is ever manufactured.  The DOVI configuration record is out of reach for a header edit, so an RPU in the bitstream with no container record is detected and held, never repaired.
 
@@ -955,7 +970,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.5.0.
+'x.0.0' is a release.  '0.x.0' is a minor update or a bug fix.  '0.0.x' is a pre-release.  The current version is 0.6.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals an existing tag is a build that cannot be told apart from the one before it, on the provider User-Agent, on the image label, or in a bug report.  The workflow's 'validate' job enforces it:  it reads 'VERSION' from 'app/__init__.py', fetches the tags, and fails when the version is already tagged.  The 'image' job then tags the image with that version and stamps 'org.opencontainers.image.version' from it.  Consequence, stated plainly:  a manual run of the workflow on a tree whose 'VERSION' is already tagged fails at validation, which is the rule working as intended.
 
@@ -1101,7 +1116,7 @@ Open items, all deferred by the developer.  Remove an entry when it is done or d
 
 - **AV1 calibration.**  Section 14 records 'av1_qsv' at 'global_quality 26' and 'libsvtav1' at 'crf 24' as starting points with no calibration behind them.  The first AV1 batch ran 2026-09-10.  Score the outputs against their sources with the 'ssim' filter, per section 14;  bitrate alone settles nothing.
 - **'X265_DV_VBV_KBPS'.**  The known issue in section 14.  Settle it with one full-length 1080p DV encode and one UHD, reading the x265 log for VBV adjustments and comparing the bitrate curve against an uncapped CRF 18 encode.  Inert under gate 1 until then.
-- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), the last four groups written 2026-09-11.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
-- **Review the library audit's first pass.**  Expected findings on the current library:  the three titles under-declaring ST 2086 and Forrest Gump's missing CLL, per section 12.  Anything else it reports is either a real defect or a check that needs correcting, and the edition false positive fixed on 2026-09-10 is the reference for the second kind.
+- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), T-136 to T-142 (the ladder, page confirmation, the None guard, the zero content light pair), the last five groups written 2026-09-11.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
+- **Review the library audit's first pass.**  Expected findings on the current library:  the three titles under-declaring ST 2086 and Forrest Gump's missing CLL, per section 12;  the last is a zero pair the container genuinely lacks, and its repair copy passes now that the probe reads the element through mkvmerge.  Anything else it reports is either a real defect or a check that needs correcting, and the edition false positive fixed on 2026-09-10 is the reference for the second kind.
 - **The grain probe against the 9,697k reference.**  Section 14's grain-heavy 35mm title encoded at 'aq-mode=3' before automatic detection existed.  Run the probe on that source and confirm the ratio clears 'GRAIN_THRESHOLD', so the tune that separated the nine-film batch is what an automatic run would choose.
 - **Hardware decode on the QSV path.**  'build_command' decodes in software and uploads with 'hwupload';  on the A310 the media engine sat at 47 percent with the decode block near idle.  '-hwaccel qsv -hwaccel_output_format qsv' ahead of '-i' keeps frames on the device.  Needs a measurement and a software fallback for sources the hardware decoder does not accept.  Not planned;  noted as the next lever on the GPU path.

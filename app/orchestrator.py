@@ -463,6 +463,14 @@ class Orchestrator:
                 raise RetryLater("provider lookup failed: %s" % exc)
             problem = "provider ID could not be resolved and must never be guessed"
             self._fresh_lookups.discard(title_id)
+            if identity and identity.get("missing"):
+                anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")
+                problem = (
+                    "resolved %s (%s) but %s could not be determined from the Wikidata entity; "
+                    "an ID is never guessed"
+                    % (anchor, identity.get("title") or identity.get("show"), ", ".join(identity["missing"]))
+                )
+                identity = None
         if identity is None:
             if row.get("overridden"):
                 identity = self._unidentified(kind, source)

@@ -112,7 +112,14 @@ def normalise_for_match(s):
 
 
 #----- Naming
+def _require(**fields):
+    missing = [name for name, value in fields.items() if value is None or value == ""]
+    if missing:
+        raise TitleError("cannot build a name without %s" % ", ".join(missing))
+
+
 def movie_folder(title, year, tmdb, imdb):
+    _require(title=title, year=year, tmdb=tmdb, imdb=imdb)
     imdb = str(imdb)
     if not imdb.startswith("tt"):
         imdb = "tt%s" % imdb
@@ -127,10 +134,12 @@ def movie_filename(title, year, edition=None, folder=None):
         if not base:
             raise TitleError("an edition filename requires the full folder name")
         return assert_component("%s - %s.mkv" % (base, to_filename(edition)))
+    _require(title=title, year=year)
     return assert_component("%s (%s).mkv" % (to_filename(title), year))
 
 
 def show_folder(show, year, tvdb, tmdb):
+    _require(show=show, year=year, tvdb=tvdb, tmdb=tmdb)
     return assert_component(
         "%s (%s) [tvdbid-%s] [tmdbid-%s]" % (to_filename(show), year, tvdb, tmdb)
     )
@@ -149,6 +158,7 @@ def episode_code(season, first, last=None):
 
 
 def episode_filename(show, season, first, episode_title, last=None):
+    _require(show=show, season=season, first=first, episode_title=episode_title)
     return assert_component(
         "%s - %s - %s.mkv"
         % (to_filename(show), episode_code(season, first, last), to_filename(episode_title))

@@ -214,7 +214,7 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 
 - **Start:**  a movie finding whose library file carries no tag block and no segment title, and whose folder carries '[tmdbid-N] [imdbid-ttN]'.
 - **Do:**  press Import on the finding.
-- **Expect:**  resolved with no Wikidata search, detail reads "from origin folder ids", and the published folder carries the same two ids as the library folder.
+- **Expect:**  detail reads "from origin folder ids", the debug log showing one 'ids:' search per id and no name search, the published folder carrying the same two ids as the library folder, and the tag TITLE equal to the Wikidata label rather than the folder text.
 
 **T-120  A colon title resolves from its filename form.**
 
@@ -244,7 +244,7 @@ Each case:  place the described file, wait for it to reach a terminal state, the
 
 - **Start:**  a TV finding whose library show folder carries '[tvdbid-N] [tmdbid-N]'.
 - **Do:**  press Import.
-- **Expect:**  detail reads "from origin folder ids", no Wikidata search in the debug log, and both ids on the row.
+- **Expect:**  detail reads "from origin folder ids", an 'ids:' search and no name search in the debug log, both ids and the show year on the row.
 
 **T-125  A special matches by title.**
 
@@ -455,6 +455,13 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 
 - **T-70  HTTPS answers.**  'curl -sk https://localhost/api/status'.  Expect JSON.
 - **T-71  Plain HTTP does not.**  'curl -s http://localhost:443/api/status'.  Expect a failure, not a redirect and not a served page.
+- **T-136  A folder-carried id yields the provider's title, never the folder text.**  Import a movie with no tag block from a folder named in the pre-transform form, 'Star Wars Episode IV A New Hope (1977) [tmdbid-11] [imdbid-tt0076759]'.  Expect the MOVIE tag TITLE to read 'Star Wars: Episode IV – A New Hope', the published name 'Star Wars Episode IV - A New Hope (1977)', and the IDENTIFIED detail naming 'folder ids' or 'origin folder ids'.
+- **T-137  A filename-form tag TITLE is corrected, not held.**  Import a movie whose MOVIE block carries a correct TMDB and a TITLE in filename form, 'Star Wars Episode VII The Force Awakens'.  Expect identification from 'embedded tag', the published tag TITLE equal to the Wikidata label, and no hold.
+- **T-138  A TVDB-only COLLECTION block completes from the entity.**  Import an episode whose block carries TVDB and no TMDB.  Expect the identity to carry the TMDB and the show year from Wikidata, the published show folder '[tvdbid-N] [tmdbid-N]' with a four-digit year, and the IDENTIFIED detail naming 'embedded tag'.
+- **T-139  A show never publishes into a '(None)' folder.**  Import an episode with a complete COLLECTION block.  Expect the published show folder to carry the year;  a '(None)' anywhere in 'complete/' fails the case.
+- **T-140  A missing field holds with the field named.**  Import an episode whose show entity carries no P4983 and whose folders carry no tmdb.  Expect HELD at IDENTIFIED with a reason of the form 'resolved tvdb N (Show) but tmdb could not be determined from the Wikidata entity; an ID is never guessed', Force available, and nothing published.
+- **T-141  An id Wikidata does not know falls to the next rung.**  Import a movie in a folder carrying a fabricated '[tmdbid-999999999]' and a resolvable file name.  Expect the log to record 'no Wikidata entity carries tmdb=999999999' and the identity to come from 'filename'.
+- **T-142  A zero content light pair passes the gates.**  Import an HDR source whose SEI carries MaxCLL 0 and MaxFALL 0 with no container declaration.  Expect the REMUXED detail to record the content light repair, READY and VERIFIED to pass with no HDR problem, and 'mkvmerge -J' on the published file to report 'max_content_light' 0 and 'max_frame_light' 0.
 - **T-72  The dashboard is served.**  'curl -sk https://localhost/'.  Expect HTML.
 - **T-76  A poster appears once a title is identified.**  Import a film with a resolvable tmdb id.  Expect '/api/titles/<id>' to carry a 'poster_url' after IDENTIFIED, a 'poster' hash beside it, and 'GET /api/poster/<hash>' to return image bytes with an image content type.
 - **T-77  A title with no poster falls back to a text tile.**  A file held at the standards gate, which never identifies.  Expect 'poster_url' and 'poster' null, '/api/poster/<any unknown hash>' to answer 404, and the tile to show the filename on the same footprint rather than a blank.
