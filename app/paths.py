@@ -218,6 +218,7 @@ class Layout:
         parent = os.path.dirname(_norm(path))
         while parent != stop and _under(parent, stop):
             self.assert_writable(parent)
+            #----- rmdir refuses a folder with anything left in it, and that ends the climb.
             try:
                 os.rmdir(parent)
             except OSError:

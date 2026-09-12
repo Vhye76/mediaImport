@@ -15,7 +15,7 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
 
 Assessment runs ahead of encoding.  MAX_JOBS workers take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles from their queues in order.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
 
-Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.
+Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.  A folder under 'import/' that is left empty by that move is removed, so a title dropped in as a whole folder does not leave its shell behind.
 
 ## Stages
 
@@ -37,7 +37,7 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | ENCODED | encoded | The encoder finished, or the router chose passthrough and no re-encode was needed. |
 | VERIFIED | verified | Duration, packet count, track statistics, tag structure and HDR declarations checked on the finished file, every failure collected before it holds. |
 | PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned. |
-| CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
+| CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine, the folder it leaves empty under 'import/' is removed, and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
 
 Three further values sit outside the pipeline.
 
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.7.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
+Current version 0.7.3, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 
