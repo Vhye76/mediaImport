@@ -70,6 +70,17 @@ def in_pipeline(stage):
     return stage != QUARANTINED
 
 
+def files_present(row):
+    return {
+        name: bool(row.get(key)) and os.path.exists(row[key])
+        for name, key in (
+            ("output", "output_path"),
+            ("source", "source_path"),
+            ("quarantine", "quarantine_path"),
+        )
+    }
+
+
 #----- Schema
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS titles (

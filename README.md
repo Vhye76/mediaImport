@@ -33,10 +33,10 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
 | READY | ready | Passed the readiness gate, or was forced past it, and is queued for an encoder slot. |
-| ENCODING | encoding | An encoder is running.  Percent complete, estimated time remaining and speed appear beside it. |
+| ENCODING | encoding | An encoder is running.  Frames done of the total and the estimated time remaining appear beside it;  the count comes from the encoder itself, so a sparse subtitle track cannot make a running encode look stuck. |
 | ENCODED | encoded | The encoder finished, or the router chose passthrough and no re-encode was needed. |
 | VERIFIED | verified | Duration, packet count, track statistics, tag structure and HDR declarations checked on the finished file, every failure collected before it holds. |
-| PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned. |
+| PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned.  Move the file out of 'complete/' and the title leaves this column on the next poll:  its record is closed if nothing of it remains, or counted under quarantined files while its retired source is still in '.quarantine'. |
 | CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine, the folder it leaves empty under 'import/' is removed, and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
 
 Three further values sit outside the pipeline.
@@ -44,10 +44,10 @@ Three further values sit outside the pipeline.
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
 | HELD | needs a decision | A gate failed and the title is waiting for you.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
-| QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'. |
+| QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'.  Remove it from there and the record closes on the next poll. |
 | FAILED | failed | A mechanical failure:  an unreadable probe, a remux or encoder that exited non-zero, or a publish that could not write.  Nothing was moved or deleted, and no output exists, so Force through cannot apply and is not offered;  Retry and Discard are. |
 
-A row marked "files gone" refers to a title whose files you have since removed by hand.  It is a record of what the pipeline did rather than something still on disk, and the Forget button removes the record.  Forget only removes a database row;  it never deletes a file.
+A row marked "files gone" refers to a title whose files you have since removed by hand.  The watcher closes such a record on its next poll;  the Forget button does the same at once.  Forget only removes a database row;  it never deletes a file.
 
 ## Layout
 
@@ -270,7 +270,7 @@ A background sweep over the mounted libraries, looking for every deviation the p
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
-Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with a progress bar under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
+Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with bytes copied of the total under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
 
 ## One instance at a time
 
@@ -288,8 +288,8 @@ No authentication.  Anyone who can reach the port can drive it, including forcin
 GET  /                            dashboard
 GET  /api/status                  config, GPU state, encode space, stage counts, the depth of
                                   the assessment queue and each encoder pool's queue, active
-                                  threads per pool, uptime, audit status, and live percent,
-                                  ETA and speed for every running encode
+                                  threads per pool, uptime, audit status, and for every running
+                                  encode its frame, total_frames, fps and eta_s
 GET  /api/titles                  every title
 GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue, held and failed titles together
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.7.3, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
+Current version 0.7.4, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

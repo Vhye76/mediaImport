@@ -159,28 +159,26 @@ class Orchestrator:
         self.terminate_encodes()
 
     #----- Encode progress
-    def _progress_handler(self, title_id, duration):
+    def _progress_handler(self, title_id, total_frames):
+        #----- frames, never out_time:  ffmpeg reports the slowest output stream's clock,
+        #----- and a sparse subtitle track parks it while the encoder runs on.
         def handle(fields):
-            micros = fields.get("out_time_us") or fields.get("out_time_ms")
             try:
-                seconds = int(micros) / 1000000.0
+                frame = int(fields.get("frame"))
             except (TypeError, ValueError):
                 return
-            speed = 0.0
+            fps = 0.0
             try:
-                speed = float((fields.get("speed") or "0").rstrip("xX ").strip())
+                fps = float(fields.get("fps") or 0)
             except ValueError:
                 pass
             row = {
-                "seconds": round(seconds, 1),
-                "duration": round(duration, 1) if duration else None,
-                "fps": fields.get("fps"),
-                "speed": speed or None,
+                "frame": frame,
+                "total_frames": total_frames,
+                "fps": round(fps, 2) or None,
             }
-            if duration:
-                row["percent"] = round(min(100.0, seconds / duration * 100.0), 1)
-                if speed > 0:
-                    row["eta_s"] = int(max(0.0, duration - seconds) / speed)
+            if total_frames and fps > 0:
+                row["eta_s"] = int(max(0, total_frames - frame) / fps)
             self._progress[title_id] = row
         return handle
 
@@ -270,6 +268,7 @@ class Orchestrator:
         for gone in [p for p in self._seen_sizes if not os.path.exists(p)]:
             del self._seen_sizes[gone]
         self._blocked_paths = {p for p in self._blocked_paths if os.path.exists(p)}
+        self._close_collected()
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
             for name in sorted(filenames):
@@ -308,6 +307,42 @@ class Orchestrator:
                 log.info("title %s detected %s", title_id, path)
                 self.store.link_import(title_id, path)
                 self.queue.put(title_id)
+
+    #----- Rows whose files have left the pipeline's own areas
+    def _close_collected(self):
+        #----- dry run publishes nothing, so every output path is absent by design.
+        if self.cfg.dry_run:
+            return
+        for stage in state.COMPLETE:
+            for row in self.store.all(stage=stage):
+                if not row.get("output_path"):
+                    continue
+                present = state.files_present(row)
+                if present["output"]:
+                    continue
+                if present["quarantine"]:
+                    reason = (
+                        "output left complete, promoted or removed by hand; "
+                        "retired source remains in quarantine"
+                    )
+                    self.store.advance(row["id"], state.QUARANTINED, reason, reason=reason)
+                    log.info("title %s %s", row["id"], reason)
+                else:
+                    log.info(
+                        "title %s output %s left complete and no file remains, title closed",
+                        row["id"], os.path.basename(row["output_path"]),
+                    )
+                    self.store.forget(row["id"])
+        for row in self.store.all(stage=state.QUARANTINED):
+            if not row.get("quarantine_path"):
+                continue
+            if any(state.files_present(row).values()):
+                continue
+            log.info(
+                "title %s quarantined file %s removed and no file remains, title closed",
+                row["id"], os.path.basename(row["quarantine_path"]),
+            )
+            self.store.forget(row["id"])
 
     def _stable(self, path):
         try:
@@ -949,7 +984,7 @@ class Orchestrator:
             return work
 
         started = time.time()
-        duration = probemod.usable_duration(video, container)
+        total_frames = probemod.total_frames(video, container)
         self.store.advance(
             title_id, state.ENCODING,
             "%s on %s" % (decision.encoder, decision.device),
@@ -963,7 +998,7 @@ class Orchestrator:
                 cmd,
                 register=self._register_proc,
                 unregister=self._unregister_proc,
-                on_progress=self._progress_handler(title_id, duration),
+                on_progress=self._progress_handler(title_id, total_frames),
             )
             if self.stop_event.is_set():
                 raise RetryLater("shutting down, encode cancelled")
@@ -1183,14 +1218,19 @@ class Orchestrator:
                 return None
             record = dict(record)
         copying = not record["done"] and record["error"] is None
-        percent = None
+        copied = None
         #----- progress is the size of the growing '.part', no callback in the copy.
-        if copying and record["total"]:
+        if copying:
             try:
-                percent = 100.0 * os.path.getsize(record["destination"] + ".part") / record["total"]
+                copied = os.path.getsize(record["destination"] + ".part")
             except OSError:
-                percent = None
-        return {"copying": copying, "percent": percent, "error": record["error"]}
+                copied = None
+        return {
+            "copying": copying,
+            "copied_bytes": copied,
+            "total_bytes": record["total"],
+            "error": record["error"],
+        }
 
     #----- Reporting
     def status(self):

@@ -226,15 +226,11 @@ class WebUI:
         row["complete"] = state.is_complete(row.get("stage"))
         row["poster"] = poster_key(row["poster_url"]) if row.get("poster_url") else None
         row["forceable"] = row.get("stage") == state.HELD
-        output = row.get("output_path")
-        source = row.get("source_path")
-        quarantined = row.get("quarantine_path")
-        row["output_present"] = bool(output) and os.path.exists(output)
-        row["source_present"] = bool(source) and os.path.exists(source)
-        row["quarantine_present"] = bool(quarantined) and os.path.exists(quarantined)
-        row["files_gone"] = not (
-            row["output_present"] or row["source_present"] or row["quarantine_present"]
-        )
+        present = state.files_present(row)
+        row["output_present"] = present["output"]
+        row["source_present"] = present["source"]
+        row["quarantine_present"] = present["quarantine"]
+        row["files_gone"] = not any(present.values())
         return row
 
     def poster(self, key):

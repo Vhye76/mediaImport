@@ -115,6 +115,17 @@ def usable_duration(video, container=None):
     return 0.0
 
 
+def total_frames(video, container=None):
+    count = (video or {}).get("frame_count")
+    if count:
+        return int(count)
+    rate = _float_or_none((video or {}).get("frame_rate"))
+    duration = usable_duration(video, container)
+    if rate and duration:
+        return int(round(rate * duration))
+    return None
+
+
 def _float_or_none(value):
     try:
         return float(value)

@@ -251,6 +251,7 @@ function pill(el, text, cls) {
   el.className = "pill" + (cls ? " " + cls : "");
 }
 function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function num(n) { return Number(n).toLocaleString("en-US"); }
 function fmtEta(s) {
   if (s < 60) return Math.round(s) + "s";
   const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
@@ -353,13 +354,13 @@ async function refresh() {
     const p = prog[t.id];
     const bits = [t.encoder || t.display_stage || ""];
     if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
-    const pct = p && p.percent != null ? p.percent : null;
     const line = esc(bits.filter(Boolean).join("   "));
-    if (pct == null) return `<div class="s">${line}</div>`;
-    const w = Math.max(0, Math.min(100, pct));
+    if (!p || p.frame == null) return `<div class="s">${line}</div>`;
+    if (!p.total_frames) return `<div class="s">${line}</div><div class="s">${num(p.frame)} frames</div>`;
+    const w = Math.max(0, Math.min(100, 100 * p.frame / p.total_frames));
     return `<div class="s">${line}</div>
       <div class="bar"><i style="width:${w}%"></i></div>
-      <div class="s">${esc(pct.toFixed(1))}%</div>`;
+      <div class="s">${num(p.frame)} / ${num(p.total_frames)} frames</div>`;
   }, "Nothing encoding.");
 
   paint("t-held", "n-held", titles.filter(t => t.stage === "HELD"),
@@ -575,10 +576,11 @@ function findingSide(f) {
   }
   let progress = "";
   if (copying) {
-    const pct = copy.percent == null ? null : Math.max(0, Math.min(100, copy.percent));
-    progress = pct == null
+    const done = copy.copied_bytes, total = copy.total_bytes;
+    progress = done == null || !total
       ? `<div class="s">copying</div>`
-      : `<div class="bar"><i style="width:${pct}%"></i></div><div class="s">copying ${esc(pct.toFixed(1))}%</div>`;
+      : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, 100 * done / total))}%"></i></div>
+         <div class="s">copying ${gb(done)} / ${gb(total)}</div>`;
   }
   return `<div class="side">
       <div class="btns">
